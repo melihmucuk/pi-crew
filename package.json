@@ -1,0 +1,41 @@
+{
+  "name": "@melihmucuk/pi-crew",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Non-blocking subagent orchestration for pi coding agent",
+  "files": [
+    "dist/",
+    "agents/"
+  ],
+  "author": "Melih Mucuk",
+  "license": "MIT",
+  "keywords": [
+    "pi-package",
+    "ai",
+    "agents",
+    "subagent",
+    "orchestration",
+    "coding-agent"
+  ],
+  "pi": {
+    "extensions": [
+      "./dist/index.js"
+    ]
+  },
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit"
+  },
+  "peerDependencies": {
+    "@mariozechner/pi-ai": "*",
+    "@mariozechner/pi-agent-core": "*",
+    "@mariozechner/pi-coding-agent": "*",
+    "@mariozechner/pi-tui": "*",
+    "@sinclair/typebox": "*"
+  },
+  "devDependencies": {
+    "@mariozechner/pi-coding-agent": "^0.63.1",
+    "@types/node": "^22.19.3",
+    "typescript": "^5.9.3"
+  }
+}

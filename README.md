@@ -1,0 +1,85 @@
+# pi-crew
+
+Non-blocking subagent orchestration for [pi](https://pi.dev). Spawn isolated agents that work in parallel while your main session stays interactive. Results are delivered back as steering messages when done.
+
+## Install
+
+```bash
+pi install @melihmucuk/pi-crew
+```
+
+## How It Works
+
+pi-crew adds two tools and one command to your pi session:
+
+### `crew_list`
+
+Lists available agent definitions and currently running agents.
+
+### `crew_spawn`
+
+Spawns an agent in an isolated session. The agent runs in the background with its own context window, tools, and skills. When it finishes, the result is delivered to your main session as a steering message that triggers a new turn.
+
+```
+"spawn scout and find all API endpoints and their authentication methods"
+```
+
+### `/crew-abort`
+
+Aborts a running agent. Supports tab completion for agent IDs.
+
+## Bundled Agents
+
+pi-crew ships with five agent definitions that cover common workflows:
+
+| Agent              | Purpose                                                                             | Tools                      | Model            |
+| ------------------ | ----------------------------------------------------------------------------------- | -------------------------- | ---------------- |
+| **scout**            | Investigates codebase and returns structured findings. Read-only. Use before planning or implementing to gather context. | read, grep, find, ls, bash | claude-haiku-4-5  |
+| **planner**          | Analyzes requirements and produces a step-by-step implementation plan. Read-only. Does not write code.                   | read, grep, find, ls, bash | gpt-5.4           |
+| **code-reviewer**    | Reviews code changes for bugs, security issues, and correctness. Read-only. Does not fix issues.                         | read, grep, find, ls, bash | gpt-5.4           |
+| **quality-reviewer** | Reviews code structure for maintainability, duplication, and complexity. Read-only. Does not look for bugs.               | read, grep, find, ls, bash | gpt-5.4           |
+| **worker**           | Implements code changes, fixes, and refactors autonomously. Has full read-write access to the codebase.                  | all                        | claude-sonnet-4-6 |
+
+## Custom Agents
+
+Create `.md` files in `~/.pi/agent/agents/` with YAML frontmatter:
+
+```markdown
+---
+name: my-agent
+description: What this agent does
+model: anthropic/claude-haiku-4-5
+thinking: medium
+tools: read, grep, find, ls, bash
+skills: skill-1, skill-2
+---
+
+Your system prompt goes here. This is the body of the markdown file.
+
+The agent will follow these instructions when executing tasks.
+```
+
+### Frontmatter Fields
+
+| Field         | Required | Description                                                                                     |
+| ------------- | -------- | ----------------------------------------------------------------------------------------------- |
+| `name`        | yes      | Agent identifier. No whitespace, use hyphens.                                                   |
+| `description` | yes      | Shown in `crew_list` output.                                                                    |
+| `model`       | no       | `provider/model-id` format (e.g., `anthropic/claude-haiku-4-5`). Falls back to session default. |
+| `thinking`    | no       | Thinking level: `off`, `minimal`, `low`, `medium`, `high`, `xhigh`.                             |
+| `tools`       | no       | Comma-separated list: `read`, `bash`, `edit`, `write`, `grep`, `find`, `ls`. Omit for all.      |
+| `skills`      | no       | Comma-separated skill names (e.g., `ast-grep`). Omit for all.                                   |
+| `compaction`  | no       | Enable context compaction. Defaults to `true`.                                                  |
+
+## Status Widget
+
+When agents are running, a live status widget appears in the TUI showing each agent's ID, model, turn count, and context token usage.
+
+```
+⠹ scout-a1b2 (claude-haiku-4-5) · turn 3 · 12.5k ctx
+⠸ worker-c3d4 (claude-sonnet-4-20250514) · turn 7 · 45.2k ctx
+```
+
+## License
+
+MIT
