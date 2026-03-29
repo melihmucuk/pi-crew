@@ -56,6 +56,16 @@ pi-crew ships with five agent definitions that cover common workflows:
 | **quality-reviewer** | Reviews code structure for maintainability, duplication, and complexity. Read-only. Does not look for bugs.              | read, grep, find, ls, bash | gpt-5.4           |
 | **worker**           | Implements code changes, fixes, and refactors autonomously. Has full read-write access to the codebase.                  | all                        | claude-sonnet-4-6 |
 
+## Bundled Agents Setup
+
+`pi install` only registers the extension. The bundled agent definitions need to be copied to `~/.pi/agent/agents/` manually:
+
+```bash
+mkdir -p ~/.pi/agent/agents && cp "$(npm root -g)/@melihmucuk/pi-crew/agents/"*.md ~/.pi/agent/agents/
+```
+
+Existing agent files with the same name will be overwritten. Custom agents in the same directory are not affected.
+
 ## Custom Agents
 
 Create `.md` files in `~/.pi/agent/agents/` with YAML frontmatter:
@@ -94,7 +104,7 @@ When agents are running, a live status widget appears in the TUI showing each ag
 
 ```
 ⠹ scout-a1b2 (claude-haiku-4-5) · turn 3 · 12.5k ctx
-⠸ worker-c3d4 (claude-sonnet-4-20250514) · turn 7 · 45.2k ctx
+⠸ worker-c3d4 (claude-sonnet-4-6) · turn 7 · 45.2k ctx
 ⏳ planner-e5f6 (gpt-5.4) · turn 2 · 8.3k ctx
 ```
 
