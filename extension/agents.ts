@@ -2,8 +2,9 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import type { ThinkingLevel } from "@mariozechner/pi-agent-core";
 import { getAgentDir, parseFrontmatter } from "@mariozechner/pi-coding-agent";
+import { isSupportedToolName } from "./tool-registry.js";
 
-export interface ParsedModel {
+interface ParsedModel {
 	provider: string;
 	modelId: string;
 }
@@ -27,7 +28,7 @@ export interface AgentDiscoveryWarning {
 	message: string;
 }
 
-export interface AgentDiscoveryResult {
+interface AgentDiscoveryResult {
 	agents: AgentConfig[];
 	warnings: AgentDiscoveryWarning[];
 }
@@ -41,34 +42,61 @@ const VALID_THINKING_LEVELS: readonly string[] = [
 	"xhigh",
 ];
 
+function reportDiscoveryWarning(
+	filePath: string,
+	message: string,
+	onWarning?: (warning: AgentDiscoveryWarning) => void,
+): void {
+	onWarning?.({ filePath, message });
+	console.warn(`[pi-crew] ${message} (${filePath})`);
+}
+
 /**
  * Converts a comma-separated string or YAML array to string[].
  * Returns undefined for null/undefined input.
  */
-export function parseCommaSeparated(value: unknown): string[] | undefined {
+function parseCommaSeparated(value: unknown): string[] | undefined {
 	if (value == null) return undefined;
 
 	if (Array.isArray(value)) {
-		const items = value.map((v) => String(v).trim()).filter(Boolean);
-		return items.length > 0 ? items : undefined;
+		return value.map((v) => String(v).trim()).filter(Boolean);
 	}
 
 	if (typeof value === "string") {
-		const items = value
+		return value
 			.split(",")
 			.map((s) => s.trim())
 			.filter(Boolean);
-		return items.length > 0 ? items : undefined;
 	}
 
 	return undefined;
+}
+
+function parseListField(
+	fieldName: "tools" | "skills",
+	value: unknown,
+	filePath: string,
+	agentName: string,
+	onWarning?: (warning: AgentDiscoveryWarning) => void,
+): string[] {
+	if (value == null) return [];
+
+	const parsed = parseCommaSeparated(value);
+	if (parsed !== undefined) return parsed;
+
+	reportDiscoveryWarning(
+		filePath,
+		`Agent "${agentName}": invalid ${fieldName} field, expected a comma-separated string or YAML array`,
+		onWarning,
+	);
+	return [];
 }
 
 /**
  * Parses "provider/model-id" format.
  * Returns null if "/" is missing.
  */
-export function parseModel(value: unknown): ParsedModel | null {
+function parseModel(value: unknown): ParsedModel | null {
 	if (typeof value !== "string" || !value.includes("/")) {
 		return null;
 	}
@@ -88,7 +116,7 @@ function validateThinkingLevel(value: string | undefined): ThinkingLevel | undef
 	return undefined;
 }
 
-export function loadAgentFromFile(
+function loadAgentFromFile(
 	filePath: string,
 	onWarning?: (warning: AgentDiscoveryWarning) => void,
 ): AgentConfig | null {
@@ -107,31 +135,24 @@ export function loadAgentFromFile(
 		body = parsed.body;
 	} catch (error) {
 		const reason = error instanceof Error ? error.message : String(error);
-		onWarning?.({
-			filePath,
-			message: `Ignored invalid agent definition. Frontmatter could not be parsed: ${reason}`,
-		});
-		console.warn(
-			`[pi-crew] Ignoring agent definition "${filePath}": frontmatter could not be parsed: ${reason}`,
-		);
+		reportDiscoveryWarning(filePath, `Ignored invalid agent definition. Frontmatter could not be parsed: ${reason}`, onWarning);
 		return null;
 	}
 
-	const name = frontmatter.name;
-	const description = frontmatter.description;
+	const name = typeof frontmatter.name === "string" ? frontmatter.name.trim() : undefined;
+	const description = typeof frontmatter.description === "string" ? frontmatter.description.trim() : undefined;
 
-	if (typeof name !== "string" || !name || typeof description !== "string" || !description) {
+	if (!name || !description) {
+		reportDiscoveryWarning(
+			filePath,
+			"Ignored invalid agent definition. Required frontmatter fields \"name\" and \"description\" must be non-empty strings.",
+			onWarning,
+		);
 		return null;
 	}
 
 	if (/\s/.test(name)) {
-		onWarning?.({
-			filePath,
-			message: `Ignored agent definition "${name}". Agent names cannot contain whitespace. Use "-" instead.`,
-		});
-		console.warn(
-			`[pi-crew] Ignoring agent definition "${filePath}": agent name "${name}" contains whitespace. Use "-" instead.`,
-		);
+		reportDiscoveryWarning(filePath, `Ignored agent definition "${name}". Agent names cannot contain whitespace. Use "-" instead.`, onWarning);
 		return null;
 	}
 
@@ -139,26 +160,32 @@ export function loadAgentFromFile(
 	const parsedModel = modelRaw ? parseModel(modelRaw) : undefined;
 
 	if (modelRaw && !parsedModel) {
-		onWarning?.({
-			filePath,
-			message: `Agent "${name}": invalid model format "${modelRaw}" (expected "provider/model-id"), ignoring model field`,
-		});
-		console.warn(
-			`[pi-crew] Agent "${name}": invalid model format "${modelRaw}" (expected "provider/model-id"), ignoring model field`,
-		);
+		reportDiscoveryWarning(filePath, `Agent "${name}": invalid model format "${modelRaw}" (expected "provider/model-id"), ignoring model field`, onWarning);
 	}
 
 	const thinkingRaw = typeof frontmatter.thinking === "string" ? frontmatter.thinking : undefined;
 	const thinking = validateThinkingLevel(thinkingRaw);
 
 	if (thinkingRaw && !thinking) {
-		console.warn(
-			`[pi-crew] Agent "${name}": invalid thinking level "${thinkingRaw}", ignoring`,
-		);
+		reportDiscoveryWarning(filePath, `Agent "${name}": invalid thinking level "${thinkingRaw}", ignoring`, onWarning);
 	}
 
-	const tools = parseCommaSeparated(frontmatter.tools);
-	const skills = parseCommaSeparated(frontmatter.skills);
+	const rawTools = "tools" in frontmatter
+		? parseListField("tools", frontmatter.tools, filePath, name, onWarning)
+		: undefined;
+	const invalidTools = rawTools?.filter((toolName) => !isSupportedToolName(toolName)) ?? [];
+	if (invalidTools.length > 0) {
+		reportDiscoveryWarning(
+			filePath,
+			`Agent "${name}": unknown tools ${invalidTools.map((toolName) => `"${toolName}"`).join(", ")}, ignoring`,
+			onWarning,
+		);
+	}
+	const tools = rawTools?.filter(isSupportedToolName);
+
+	const skills = "skills" in frontmatter
+		? parseListField("skills", frontmatter.skills, filePath, name, onWarning)
+		: undefined;
 
 	const compaction = typeof frontmatter.compaction === "boolean" ? frontmatter.compaction : undefined;
 	const interactive = typeof frontmatter.interactive === "boolean" ? frontmatter.interactive : undefined;
@@ -206,13 +233,7 @@ export function discoverAgents(): AgentDiscoveryResult {
 
 		const existing = seenNames.get(agent.name);
 		if (existing) {
-			warnings.push({
-				filePath,
-				message: `Duplicate agent name "${agent.name}" (already defined in ${existing}), skipping`,
-			});
-			console.warn(
-				`[pi-crew] Duplicate agent name "${agent.name}": "${filePath}" conflicts with "${existing}", skipping`,
-			);
+			reportDiscoveryWarning(filePath, `Duplicate agent name "${agent.name}" (already defined in ${existing}), skipping`, (warning) => warnings.push(warning));
 			continue;
 		}
 

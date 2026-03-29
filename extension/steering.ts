@@ -34,7 +34,9 @@ export function sendSteeringMessage(
 	const icon = STATUS_ICON[payload.status];
 	const label = STATUS_LABEL[payload.status];
 	const header = `**${icon} Agent '${payload.agentName}' (${payload.id}) ${label}**`;
-	const body = payload.result ?? payload.error;
+	const body = (payload.status === "error" || payload.status === "aborted")
+		? (payload.error ?? payload.result)
+		: (payload.result ?? payload.error);
 	const content = body ? `${header}\n\n${body}` : header;
 
 	const message = {
@@ -53,5 +55,24 @@ export function sendSteeringMessage(
 		isIdle
 			? { triggerTurn: true }
 			: { deliverAs: "steer", triggerTurn: true },
+	);
+}
+
+export function sendRemainingNote(
+	remainingCount: number,
+	pi: ExtensionAPI,
+	opts: { isIdle: boolean; triggerTurn: boolean },
+): void {
+	if (remainingCount <= 0) return;
+
+	pi.sendMessage(
+		{
+			customType: "crew-remaining",
+			content: `⏳ ${remainingCount} agent(s) still running`,
+			display: true,
+		},
+		opts.isIdle
+			? { triggerTurn: opts.triggerTurn }
+			: { deliverAs: "steer", triggerTurn: opts.triggerTurn },
 	);
 }

@@ -1,6 +1,6 @@
 # pi-crew
 
-Non-blocking subagent orchestration for [pi](https://pi.dev). Spawn isolated agents that work in parallel while your main session stays interactive. Results are delivered back as steering messages when done.
+Non-blocking subagent orchestration for [pi](https://pi.dev). Spawn isolated agents that work in parallel while your current session stays interactive. Results are delivered back to the session that spawned them as steering messages when done.
 
 ## Install
 
@@ -18,7 +18,7 @@ Lists available agent definitions and currently running agents.
 
 ### `crew_spawn`
 
-Spawns an agent in an isolated session. The agent runs in the background with its own context window, tools, and skills. When it finishes, the result is delivered to your main session as a steering message that triggers a new turn.
+Spawns an agent in an isolated session. The agent runs in the background with its own context window, tools, and skills. When it finishes, the result is delivered to the session that spawned it as a steering message that triggers a new turn. If that session is not active, the result is queued until you switch back to it.
 
 ```
 "spawn scout and find all API endpoints and their authentication methods"
@@ -93,14 +93,14 @@ The agent will follow these instructions when executing tasks.
 | `description` | yes      | Shown in `crew_list` output.                                                                    |
 | `model`       | no       | `provider/model-id` format (e.g., `anthropic/claude-haiku-4-5`). Falls back to session default. |
 | `thinking`    | no       | Thinking level: `off`, `minimal`, `low`, `medium`, `high`, `xhigh`.                             |
-| `tools`       | no       | Comma-separated list: `read`, `bash`, `edit`, `write`, `grep`, `find`, `ls`. Omit for all.      |
-| `skills`      | no       | Comma-separated skill names (e.g., `ast-grep`). Omit for all.                                   |
+| `tools`       | no       | Comma-separated list: `read`, `bash`, `edit`, `write`, `grep`, `find`, `ls`. Omit for all, use empty value for none. |
+| `skills`      | no       | Comma-separated skill names (e.g., `ast-grep`). Omit for all, use empty value for none.         |
 | `compaction`  | no       | Enable context compaction. Defaults to `true`.                                                  |
 | `interactive` | no       | Keep session alive after response for multi-turn conversations. Defaults to `false`.            |
 
 ## Status Widget
 
-When agents are running, a live status widget appears in the TUI showing each agent's ID, model, turn count, and context token usage.
+When agents are running, a live status widget appears in the TUI for the current owner session, showing each agent's ID, model, turn count, and context token usage.
 
 ```
 ⠹ scout-a1b2 (claude-haiku-4-5) · turn 3 · 12.5k ctx

@@ -1,6 +1,6 @@
 import type { ExtensionContext } from "@mariozechner/pi-coding-agent";
 import { Text } from "@mariozechner/pi-tui";
-import type { CrewManager, SubagentState } from "./runner.js";
+import type { ActiveAgentSummary, CrewManager } from "./runner.js";
 
 const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 const SPINNER_INTERVAL_MS = 80;
@@ -11,7 +11,7 @@ function formatTokens(tokens: number): string {
 	return String(tokens);
 }
 
-function buildLine(agent: SubagentState, frame: string): string {
+function buildLine(agent: ActiveAgentSummary, frame: string): string {
 	const model = agent.model ?? "…";
 	const icon = agent.status === "waiting" ? "⏳" : frame;
 	return `${icon} ${agent.id} (${model}) · turn ${agent.turns} · ${formatTokens(agent.contextTokens)} ctx`;
@@ -42,11 +42,11 @@ function clearWidget(): void {
 	current.ctx.ui.setWidget("crew-status", undefined);
 }
 
-function hasRunningAgent(agents: SubagentState[]): boolean {
-	return agents.some((a) => a.status === "running");
+function hasRunningAgent(agents: ActiveAgentSummary[]): boolean {
+	return agents.some((agent) => agent.status === "running");
 }
 
-function syncWidgetText(state: WidgetState, agents: SubagentState[]): void {
+function syncWidgetText(state: WidgetState, agents: ActiveAgentSummary[]): void {
 	const frame = SPINNER_FRAMES[state.frameIndex % SPINNER_FRAMES.length];
 	const lines = agents.map((agent) => buildLine(agent, frame));
 	state.text.setText(lines.join("\n"));
@@ -59,7 +59,8 @@ export function updateWidget(ctx: ExtensionContext, crewManager: CrewManager): v
 		return;
 	}
 
-	const running = crewManager.getActive();
+	const ownerSessionId = ctx.sessionManager.getSessionId();
+	const running = crewManager.getActiveSummariesForOwner(ownerSessionId);
 	if (running.length === 0) {
 		clearWidget();
 		return;
@@ -82,7 +83,7 @@ export function updateWidget(ctx: ExtensionContext, crewManager: CrewManager): v
 			tui,
 			frameIndex: 0,
 			timer: setInterval(() => {
-				const agents = crewManager.getActive();
+				const agents = crewManager.getActiveSummariesForOwner(ownerSessionId);
 				if (agents.length === 0) {
 					clearWidget();
 					return;

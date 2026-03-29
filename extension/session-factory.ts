@@ -7,47 +7,23 @@ import {
 	ModelRegistry,
 	SessionManager,
 	SettingsManager,
-	createBashTool,
-	createEditTool,
-	createFindTool,
-	createGrepTool,
-	createLsTool,
-	createReadTool,
-	createWriteTool,
 } from "@mariozechner/pi-coding-agent";
 import type { AgentConfig } from "./agents.js";
+import {
+	createSupportedTools,
+	isSupportedToolName,
+	SUPPORTED_TOOL_NAMES,
+} from "./tool-registry.js";
 
-type ToolFactory = (
-	cwd: string,
-) => ReturnType<
-	typeof createReadTool |
-		typeof createBashTool |
-		typeof createEditTool |
-		typeof createWriteTool |
-		typeof createGrepTool |
-		typeof createFindTool |
-		typeof createLsTool
->;
-
-const TOOL_FACTORIES: Record<string, ToolFactory> = {
-	read: (cwd) => createReadTool(cwd),
-	bash: (cwd) => createBashTool(cwd),
-	edit: (cwd) => createEditTool(cwd),
-	write: (cwd) => createWriteTool(cwd),
-	grep: (cwd) => createGrepTool(cwd),
-	find: (cwd) => createFindTool(cwd),
-	ls: (cwd) => createLsTool(cwd),
-};
-
-function isSupportedTool(name: string): name is keyof typeof TOOL_FACTORIES {
-	return name in TOOL_FACTORIES;
-}
-
-function resolveTools(toolNames: string[] | undefined, cwd: string) {
-	const names = toolNames ?? Object.keys(TOOL_FACTORIES);
-	return names
-		.filter(isSupportedTool)
-		.map((name) => TOOL_FACTORIES[name](cwd));
+function resolveTools(agentConfig: AgentConfig, cwd: string) {
+	const names = agentConfig.tools ?? SUPPORTED_TOOL_NAMES;
+	const invalidTools = names.filter((name) => !isSupportedToolName(name));
+	if (invalidTools.length > 0) {
+		console.warn(
+			`[pi-crew] Agent "${agentConfig.name}": unsupported tools ${invalidTools.map((name) => `"${name}"`).join(", ")}, ignoring`,
+		);
+	}
+	return createSupportedTools(names.filter(isSupportedToolName), cwd);
 }
 
 function resolveModel(
@@ -70,7 +46,21 @@ function resolveModel(
 	return model;
 }
 
-export interface BootstrapOptions {
+function warnUnknownSkills(agentConfig: AgentConfig, resourceLoader: DefaultResourceLoader): void {
+	if (!agentConfig.skills) return;
+
+	const availableSkillNames = new Set(
+		resourceLoader.getSkills().skills.map((skill) => skill.name),
+	);
+	const unknownSkills = agentConfig.skills.filter((skillName) => !availableSkillNames.has(skillName));
+	if (unknownSkills.length === 0) return;
+
+	console.warn(
+		`[pi-crew] Agent "${agentConfig.name}": unknown skills ${unknownSkills.map((skillName) => `"${skillName}"`).join(", ")}, ignoring`,
+	);
+}
+
+interface BootstrapOptions {
 	agentConfig: AgentConfig;
 	cwd: string;
 	ctx: ExtensionContext;
@@ -86,7 +76,7 @@ export async function bootstrapSession(
 	const authStorage = AuthStorage.create();
 	const modelRegistry = new ModelRegistry(authStorage);
 	const model = resolveModel(agentConfig, ctx, modelRegistry);
-	const tools = resolveTools(agentConfig.tools, cwd);
+	const tools = resolveTools(agentConfig, cwd);
 
 	const resourceLoader = new DefaultResourceLoader({
 		cwd,
@@ -98,7 +88,7 @@ export async function bootstrapSession(
 		}),
 		skillsOverride: agentConfig.skills
 			? (base) => ({
-					skills: base.skills.filter((s) => agentConfig.skills!.includes(s.name)),
+					skills: base.skills.filter((skill) => agentConfig.skills!.includes(skill.name)),
 					diagnostics: base.diagnostics,
 				})
 			: undefined,
@@ -106,6 +96,7 @@ export async function bootstrapSession(
 			agentConfig.systemPrompt.trim() ? [...base, agentConfig.systemPrompt] : base,
 	});
 	await resourceLoader.reload();
+	warnUnknownSkills(agentConfig, resourceLoader);
 
 	const settingsManager = SettingsManager.inMemory({
 		compaction: { enabled: agentConfig.compaction ?? true },

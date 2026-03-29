@@ -4,20 +4,35 @@ import type { AssistantMessage } from "@mariozechner/pi-ai";
 import type { AgentSession, ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
 import type { AgentConfig } from "./agents.js";
 import { bootstrapSession } from "./session-factory.js";
-import { type SubagentStatus, sendSteeringMessage } from "./steering.js";
+import { type SteeringPayload, type SubagentStatus, sendRemainingNote, sendSteeringMessage } from "./steering.js";
 
-export interface SubagentState {
+interface SubagentState {
 	id: string;
 	agentConfig: AgentConfig;
 	task: string;
 	status: SubagentStatus;
-	ownerSessionFile: string | undefined;
+	ownerSessionId: string;
 	session: AgentSession | null;
 	turns: number;
 	contextTokens: number;
 	model: string | undefined;
 	error?: string;
 	result?: string;
+}
+
+export interface ActiveAgentSummary {
+	id: string;
+	agentName: string;
+	status: SubagentStatus;
+	taskPreview: string;
+	turns: number;
+	contextTokens: number;
+	model: string | undefined;
+}
+
+export interface AbortableAgentSummary {
+	id: string;
+	agentName: string;
 }
 
 function generateId(name: string, existingIds: Set<string>): string {
@@ -50,22 +65,68 @@ function extractLastAssistantText(messages: AgentMessage[]): string | undefined 
 	return undefined;
 }
 
+function buildActiveAgentSummary(state: SubagentState): ActiveAgentSummary {
+	const taskPreview = state.task.length > 80 ? `${state.task.slice(0, 80)}...` : state.task;
+	return {
+		id: state.id,
+		agentName: state.agentConfig.name,
+		status: state.status,
+		taskPreview,
+		turns: state.turns,
+		contextTokens: state.contextTokens,
+		model: state.model,
+	};
+}
+
+function buildAbortableAgentSummary(state: SubagentState): AbortableAgentSummary {
+	return {
+		id: state.id,
+		agentName: state.agentConfig.name,
+	};
+}
+
 export class CrewManager {
 	private activeAgents = new Map<string, SubagentState>();
 	private extensionResolvedPath: string;
+	private currentSessionId: string | undefined;
+	private currentIsIdle: () => boolean = () => true;
+	private pendingMessages: { ownerSessionId: string; payload: SteeringPayload }[] = [];
 
 	onWidgetUpdate: (() => void) | undefined;
-	isIdle: (() => boolean) | undefined;
 
 	constructor(extensionResolvedPath: string) {
 		this.extensionResolvedPath = extensionResolvedPath;
+	}
+
+	activateSession(sessionId: string, isIdle: () => boolean, pi: ExtensionAPI): void {
+		this.currentSessionId = sessionId;
+		this.currentIsIdle = isIdle;
+		this.flushPending(pi);
+	}
+
+	private flushPending(pi: ExtensionAPI): void {
+		const toDeliver: typeof this.pendingMessages = [];
+		const remaining: typeof this.pendingMessages = [];
+
+		for (const entry of this.pendingMessages) {
+			if (entry.ownerSessionId === this.currentSessionId) {
+				toDeliver.push(entry);
+			} else {
+				remaining.push(entry);
+			}
+		}
+
+		this.pendingMessages = remaining;
+		for (const entry of toDeliver) {
+			this.deliverPayload(entry.ownerSessionId, entry.payload, pi);
+		}
 	}
 
 	spawn(
 		agentConfig: AgentConfig,
 		task: string,
 		cwd: string,
-		parentSessionFile: string | undefined,
+		ownerSessionId: string,
 		ctx: ExtensionContext,
 		pi: ExtensionAPI,
 	): string {
@@ -76,7 +137,7 @@ export class CrewManager {
 			agentConfig,
 			task,
 			status: "running",
-			ownerSessionFile: parentSessionFile,
+			ownerSessionId,
 			session: null,
 			turns: 0,
 			contextTokens: 0,
@@ -85,7 +146,7 @@ export class CrewManager {
 
 		this.activeAgents.set(id, state);
 		this.onWidgetUpdate?.();
-		void this.spawnSession(state, cwd, parentSessionFile, ctx, pi);
+		void this.spawnSession(state, cwd, ctx.sessionManager.getSessionFile(), ctx, pi);
 
 		return id;
 	}
@@ -105,18 +166,69 @@ export class CrewManager {
 		});
 	}
 
-	private finalizeAgent(state: SubagentState, pi: ExtensionAPI): void {
-		sendSteeringMessage(
-			{
-				id: state.id,
-				agentName: state.agentConfig.name,
-				status: state.status,
-				result: state.result,
-				error: state.error,
-			},
-			pi,
-			this.isIdle?.() ?? true,
-		);
+	private attachSpawnedSession(state: SubagentState, session: AgentSession): boolean {
+		if (this.activeAgents.get(state.id) !== state) {
+			session.dispose();
+			return false;
+		}
+
+		state.session = session;
+		return true;
+	}
+
+	private countRunningForOwner(ownerSessionId: string, excludeId: string): number {
+		let count = 0;
+		for (const state of this.activeAgents.values()) {
+			if (
+				state.id !== excludeId &&
+				state.ownerSessionId === ownerSessionId &&
+				state.status === "running"
+			) {
+				count++;
+			}
+		}
+		return count;
+	}
+
+	/**
+	 * Delivers a payload to the owner session if active, otherwise queues it.
+	 * When the owner session is idle, inject the hidden remaining-count note first
+	 * so the triggered turn sees both pieces of context.
+	 */
+	private deliverPayload(ownerSessionId: string, payload: SteeringPayload, pi: ExtensionAPI): void {
+		if (ownerSessionId !== this.currentSessionId) {
+			this.pendingMessages.push({ ownerSessionId, payload });
+			return;
+		}
+
+		const remaining = this.countRunningForOwner(ownerSessionId, payload.id);
+		const isIdle = this.currentIsIdle();
+
+		sendSteeringMessage(payload, pi, isIdle);
+		sendRemainingNote(remaining, pi, { isIdle, triggerTurn: false });
+	}
+
+	/**
+	 * Single owner for post-prompt and terminal state transitions.
+	 * Publishes the outcome, updates state, and disposes finished agents.
+	 */
+	private settleAgent(
+		state: SubagentState,
+		nextStatus: SubagentStatus,
+		opts: { result?: string; error?: string },
+		pi: ExtensionAPI,
+	): void {
+		state.status = nextStatus;
+		state.result = opts.result;
+		state.error = opts.error;
+
+		this.deliverPayload(state.ownerSessionId, {
+			id: state.id,
+			agentName: state.agentConfig.name,
+			status: state.status,
+			result: state.result,
+			error: state.error,
+		}, pi);
 
 		if (state.status !== "waiting") {
 			this.disposeAgent(state);
@@ -131,6 +243,28 @@ export class CrewManager {
 		this.onWidgetUpdate?.();
 	}
 
+	private async runPromptCycle(
+		state: SubagentState,
+		prompt: string,
+		pi: ExtensionAPI,
+	): Promise<void> {
+		if (isAborted(state)) return;
+
+		try {
+			await state.session!.prompt(prompt);
+			if (isAborted(state)) return;
+
+			const result = extractLastAssistantText(state.session!.messages) ?? "(no output)";
+			const nextStatus = state.agentConfig.interactive ? "waiting" : "done";
+			this.settleAgent(state, nextStatus, { result }, pi);
+		} catch (err) {
+			if (isAborted(state)) return;
+
+			const error = err instanceof Error ? err.message : String(err);
+			this.settleAgent(state, "error", { error }, pi);
+		}
+	}
+
 	private async spawnSession(
 		state: SubagentState,
 		cwd: string,
@@ -141,7 +275,7 @@ export class CrewManager {
 		try {
 			if (isAborted(state)) return;
 
-			const sessionResult = await bootstrapSession({
+			const { session } = await bootstrapSession({
 				agentConfig: state.agentConfig,
 				cwd,
 				ctx,
@@ -149,30 +283,17 @@ export class CrewManager {
 				parentSessionFile,
 			});
 
-			const { session } = sessionResult;
-			state.session = session;
-			if (isAborted(state)) return;
+			if (!this.attachSpawnedSession(state, session)) return;
 
 			this.attachSessionListeners(state, session);
-			await session.prompt(state.task);
-			if (isAborted(state)) return;
-
-			state.result = extractLastAssistantText(session.messages) ?? "(no output)";
-			state.status = state.agentConfig.interactive ? "waiting" : "done";
-			this.finalizeAgent(state, pi);
+			await this.runPromptCycle(state, state.task, pi);
 		} catch (err) {
 			if (isAborted(state)) return;
 
-			state.status = "error";
-			state.error = err instanceof Error ? err.message : String(err);
-			this.finalizeAgent(state, pi);
-		} finally {
-			if (!this.activeAgents.has(state.id)) {
-				// Agent removed (by abort or finalize) but session may have been
-				// created after removal. Dispose to prevent leak.
-				state.session?.dispose();
-			} else if (state.status !== "waiting") {
-				this.disposeAgent(state);
+			// Only bootstrap errors reach here; runPromptCycle handles its own errors
+			if (state.status === "running") {
+				const error = err instanceof Error ? err.message : String(err);
+				this.settleAgent(state, "error", { error }, pi);
 			}
 		}
 	}
@@ -181,11 +302,11 @@ export class CrewManager {
 		id: string,
 		message: string,
 		pi: ExtensionAPI,
-		callerSessionFile: string | undefined,
+		callerSessionId: string,
 	): { error?: string } {
 		const state = this.activeAgents.get(id);
 		if (!state) return { error: `No agent with id "${id}"` };
-		if (state.ownerSessionFile !== callerSessionFile) {
+		if (state.ownerSessionId !== callerSessionId) {
 			return { error: `Agent "${id}" belongs to a different session` };
 		}
 		if (state.status !== "waiting") {
@@ -195,31 +316,14 @@ export class CrewManager {
 
 		state.status = "running";
 		this.onWidgetUpdate?.();
-		void this.runFollowUp(state, message, pi);
+		void this.runPromptCycle(state, message, pi);
 		return {};
 	}
 
-	private async runFollowUp(state: SubagentState, message: string, pi: ExtensionAPI): Promise<void> {
-		try {
-			await state.session!.prompt(message);
-			if (isAborted(state)) return;
-
-			state.result = extractLastAssistantText(state.session!.messages) ?? "(no output)";
-			state.status = state.agentConfig.interactive ? "waiting" : "done";
-			this.finalizeAgent(state, pi);
-		} catch (err) {
-			if (isAborted(state)) return;
-
-			state.status = "error";
-			state.error = err instanceof Error ? err.message : String(err);
-			this.finalizeAgent(state, pi);
-		}
-	}
-
-	done(id: string, callerSessionFile: string | undefined): { error?: string } {
+	done(id: string, callerSessionId: string): { error?: string } {
 		const state = this.activeAgents.get(id);
 		if (!state) return { error: `No active agent with id "${id}"` };
-		if (state.ownerSessionFile !== callerSessionFile) {
+		if (state.ownerSessionId !== callerSessionId) {
 			return { error: `Agent "${id}" belongs to a different session` };
 		}
 		if (state.status !== "waiting") {
@@ -234,30 +338,35 @@ export class CrewManager {
 		const state = this.activeAgents.get(id);
 		if (!state) return false;
 
-		state.status = "aborted";
-		state.error = "Aborted by user";
 		state.session?.abort().catch(() => {});
-		this.finalizeAgent(state, pi);
+		this.settleAgent(state, "aborted", { error: "Aborted by user" }, pi);
 		return true;
 	}
 
-	abortAll(pi: ExtensionAPI): void {
-		for (const [id] of this.activeAgents) {
-			this.abort(id, pi);
+	abortForOwner(ownerSessionId: string, pi: ExtensionAPI): void {
+		for (const [id, state] of this.activeAgents) {
+			if (state.ownerSessionId === ownerSessionId) {
+				this.abort(id, pi);
+			}
 		}
-	}
-
-	getActive(): SubagentState[] {
-		return Array.from(this.activeAgents.values()).filter(
-			(s) => s.status === "running" || s.status === "waiting",
+		this.pendingMessages = this.pendingMessages.filter(
+			(entry) => entry.ownerSessionId !== ownerSessionId,
 		);
 	}
 
-	getActiveForOwner(ownerSessionFile: string | undefined): SubagentState[] {
-		return Array.from(this.activeAgents.values()).filter(
-			(s) =>
-				(s.status === "running" || s.status === "waiting") &&
-				s.ownerSessionFile === ownerSessionFile,
-		);
+	getAbortableAgents(): AbortableAgentSummary[] {
+		return Array.from(this.activeAgents.values())
+			.filter((state) => state.status === "running" || state.status === "waiting")
+			.map(buildAbortableAgentSummary);
+	}
+
+	getActiveSummariesForOwner(ownerSessionId: string): ActiveAgentSummary[] {
+		return Array.from(this.activeAgents.values())
+			.filter(
+				(state) =>
+					(state.status === "running" || state.status === "waiting") &&
+					state.ownerSessionId === ownerSessionId,
+			)
+			.map(buildActiveAgentSummary);
 	}
 }
