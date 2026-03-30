@@ -63,12 +63,7 @@ Important package-level behaviors:
 
 - `pi.extensions` points pi to the built extension entry at `./dist/index.js`
 - `pi.prompts` exposes the bundled prompt template directory at `./prompts`
-- `agents/` is shipped as package data, but the bundled subagent definitions are not auto-installed into `~/.pi/agent/agents/`
-
-This means installation has two layers:
-
-- the extension itself is loaded by pi through package metadata
-- bundled subagent definition files are available to copy into the user agent directory if the user wants them
+- `agents/` is shipped as package data and auto-discovered as the lowest-priority source during agent discovery
 
 ### 3.2 Repository structure
 
@@ -244,19 +239,21 @@ This widget is session-scoped. It only shows subagents owned by the currently ac
 
 ## 6. Subagent definition model
 
-### 6.1 Discovery source
+### 6.1 Discovery sources and priority
 
 File:
 
 - `extension/agent-discovery.ts`
 
-Subagent definitions are discovered from:
+Subagent definitions are discovered from three directories in priority order:
 
-- `~/.pi/agent/agents/*.md`
+1. **Project**: `<cwd>/.pi/agents/*.md`
+2. **User global**: `~/.pi/agent/agents/*.md`
+3. **Bundled**: `agents/` in the package
 
-This is the runtime source of truth. Bundled definitions in the package are examples and installable assets, but discovery happens from the user agent directory.
+When the same subagent name exists in multiple sources, the higher-priority source wins silently. Duplicate names within the same directory produce a warning.
 
-If that directory does not exist, discovery returns an empty result without warnings.
+If a directory does not exist, it is skipped without warnings.
 
 ### 6.2 Definition format
 
@@ -749,7 +746,7 @@ They demonstrate how the extension is intended to be used:
 - `code-reviewer` for correctness review
 - `quality-reviewer` for maintainability review
 
-Architecturally, these files are not special-cased by the runtime. They go through the same discovery and bootstrap pipeline as any user-defined subagent copied into `~/.pi/agent/agents/`.
+Architecturally, these files are not special-cased by the runtime. They are auto-discovered as the lowest-priority source (priority 3) and go through the same discovery and bootstrap pipeline as project-level or user-level definitions. Users can override any bundled subagent by placing a same-named `.md` file in `<cwd>/.pi/agents/` or `~/.pi/agent/agents/`.
 
 ### 14.2 Bundled review orchestration prompt
 
