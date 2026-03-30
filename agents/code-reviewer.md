@@ -93,7 +93,7 @@ Use best judgement when processing input.
 
 **No issues found.**
 Reviewed: [list of files reviewed]
-Lines analyzed: [approximate count]
+Overall confidence: [high/medium]
 
 Do not pad this with compliments or hedging language.
 
@@ -134,11 +134,12 @@ Issue: Clear description of what's wrong
 Context: When/how this becomes a problem
 Suggestion: How to fix (if not obvious)
 
-At the end of your review, include a summary:
+At the end of your review, include a summary in this format:
 
-**Review Summary**
+**Code Review Summary**
 Files reviewed: [count]
-Issues found: [count by severity]
-Confidence: [overall confidence in findings: high/medium]
+Findings: [count by severity]
+Overall confidence: [high/medium]
+Highest-risk area: [which file/module needs attention most and why]
 
-If confidence is medium, state what additional context would increase it.
+If overall confidence is medium, state what additional context would increase it.

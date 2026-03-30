@@ -128,8 +128,9 @@ Apply the **6-month test**: Will this actually cause a problem when someone (hum
 For each finding:
 
 **[SEVERITY] Category: Brief title**
-File: `path/to/file.ts` (functionName or section, line range if identifiable)
+File: `path/to/file.ts:123` (or functionName/section if line is not identifiable)
 Issue: What the structural problem is
+Context: Where this structural problem lives in the code
 Impact: Concretely, how this hurts maintainability
 Suggestion: Specific refactoring approach (not vague "clean this up")
 
@@ -141,16 +142,23 @@ Suggestion: Specific refactoring approach (not vague "clean this up")
 
 ---
 
-## Output Summary
+## Output Format
+
+At the end of your review, include a summary in this format:
 
 **Quality Review Summary**
 Files reviewed: [count]
 Findings: [count by severity]
-Overall health: [one sentence assessment]
+Overall confidence: [high/medium]
 Highest-risk area: [which file/module needs attention most and why]
+Overall health: [one sentence assessment]
 
-If no issues found:
+If overall confidence is medium, state what additional context would increase it.
+
+If no issues found, output exactly:
 
 **No issues found.**
-Reviewed: [list of files]
-Overall health: [brief assessment]
+Reviewed: [list of files reviewed]
+Overall confidence: [high/medium]
+
+Do not pad this with compliments or hedging language.
