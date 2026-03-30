@@ -197,8 +197,9 @@ export class CrewManager {
 
 	/**
 	 * Delivers a payload to the owner session if active, otherwise queues it.
-	 * When the owner session is idle, inject the hidden remaining-count note first
-	 * so the triggered turn sees both pieces of context.
+	 * Result messages always go first. If more agents are still running and the
+	 * owner is idle, queue the result without triggering, then queue the separate
+	 * remaining note with triggerTurn so the next turn sees both in order.
 	 */
 	private deliverPayload(ownerSessionId: string, payload: SteeringPayload, pi: ExtensionAPI): void {
 		if (ownerSessionId !== this.currentSessionId) {
@@ -208,9 +209,16 @@ export class CrewManager {
 
 		const remaining = this.countRunningForOwner(ownerSessionId, payload.id);
 		const isIdle = this.currentIsIdle();
+		const triggerResultTurn = !(isIdle && remaining > 0);
 
-		sendSteeringMessage(payload, pi, isIdle);
-		sendRemainingNote(remaining, pi, { isIdle, triggerTurn: false });
+		sendSteeringMessage(payload, pi, {
+			isIdle,
+			triggerTurn: triggerResultTurn,
+		});
+		sendRemainingNote(remaining, pi, {
+			isIdle,
+			triggerTurn: isIdle && remaining > 0,
+		});
 	}
 
 	/**

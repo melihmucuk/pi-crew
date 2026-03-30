@@ -22,7 +22,7 @@
 - `crew_respond` must be fire-and-forget. Blocking the caller session defeats the purpose of interactive agents. Validate, return immediately, and deliver the result via steering message.
 - `crew_done` only performs cleanup (dispose + remove from map). It must not send a steering message because the last agent response was already delivered in the previous turn. Sending it again produces a duplicate message and an unnecessary turn.
 - Pending message flush in `activateSession` must be deferred to the next macrotask (`setTimeout`). Pi-core's `resume()` emits `session_switch` before reconnecting the agent event listener; synchronous delivery in that handler emits events on a disconnected listener, losing JSONL persistence for the custom message.
-- When other agents for the same owner are still running, send a separate `crew-remaining` message. If the owner session is idle, inject the hidden remaining note before the result so the triggered turn sees both messages. If the owner session is already streaming, queue the remaining note after the result. Do not embed the remaining count in the result message itself.
+- When other agents for the same owner are still running, send a separate `crew-remaining` message after the `crew-result`. If the owner session is idle, queue the result first without triggering, then queue the remaining note with `triggerTurn: true` so the next turn sees both messages in order. If the owner session is already streaming, queue the remaining note after the result. Do not embed the remaining count in the result message itself.
 
 ### Session Isolation
 

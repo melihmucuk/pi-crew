@@ -2,7 +2,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import type { ThinkingLevel } from "@mariozechner/pi-agent-core";
 import { getAgentDir, parseFrontmatter } from "@mariozechner/pi-coding-agent";
-import { isSupportedToolName } from "./tool-registry.js";
+import { type SupportedToolName, isSupportedToolName } from "./tool-registry.js";
 
 interface ParsedModel {
 	provider: string;
@@ -15,7 +15,7 @@ export interface AgentConfig {
 	model?: string;
 	parsedModel?: ParsedModel;
 	thinking?: ThinkingLevel;
-	tools?: string[];
+	tools?: SupportedToolName[];
 	skills?: string[];
 	compaction?: boolean;
 	interactive?: boolean;
@@ -181,7 +181,7 @@ function loadAgentFromFile(
 			onWarning,
 		);
 	}
-	const tools = rawTools?.filter(isSupportedToolName);
+	const tools = rawTools?.filter(isSupportedToolName) ?? undefined;
 
 	const skills = "skills" in frontmatter
 		? parseListField("skills", frontmatter.skills, filePath, name, onWarning)

@@ -26,18 +26,41 @@ export interface SteeringPayload {
 	error?: string;
 }
 
+export interface CrewResultMessageDetails {
+	agentId: string;
+	agentName: string;
+	status: SubagentStatus;
+	body?: string;
+}
+
+export function getCrewResultTitle(details: {
+	agentId: string;
+	agentName: string;
+	status: SubagentStatus;
+}): string {
+	return `Agent '${details.agentName}' (${details.agentId}) ${STATUS_LABEL[details.status]}`;
+}
+
+function getSteeringBody(payload: SteeringPayload): string | undefined {
+	return (payload.status === "error" || payload.status === "aborted")
+		? (payload.error ?? payload.result)
+		: (payload.result ?? payload.error);
+}
+
 export function sendSteeringMessage(
 	payload: SteeringPayload,
 	pi: ExtensionAPI,
-	isIdle: boolean,
+	opts: { isIdle: boolean; triggerTurn: boolean },
 ): void {
-	const icon = STATUS_ICON[payload.status];
-	const label = STATUS_LABEL[payload.status];
-	const header = `**${icon} Agent '${payload.agentName}' (${payload.id}) ${label}**`;
-	const body = (payload.status === "error" || payload.status === "aborted")
-		? (payload.error ?? payload.result)
-		: (payload.result ?? payload.error);
-	const content = body ? `${header}\n\n${body}` : header;
+	const body = getSteeringBody(payload);
+	const title = getCrewResultTitle({
+		agentId: payload.id,
+		agentName: payload.agentName,
+		status: payload.status,
+	});
+	const content = body
+		? `**${STATUS_ICON[payload.status]} ${title}**\n\n${body}`
+		: `**${STATUS_ICON[payload.status]} ${title}**`;
 
 	const message = {
 		customType: "crew-result",
@@ -46,15 +69,16 @@ export function sendSteeringMessage(
 		details: {
 			agentId: payload.id,
 			agentName: payload.agentName,
-			error: payload.status === "error" || payload.status === "aborted",
-		},
+			status: payload.status,
+			body,
+		} satisfies CrewResultMessageDetails,
 	};
 
 	pi.sendMessage(
 		message,
-		isIdle
-			? { triggerTurn: true }
-			: { deliverAs: "steer", triggerTurn: true },
+		opts.isIdle
+			? { triggerTurn: opts.triggerTurn }
+			: { deliverAs: "steer", triggerTurn: opts.triggerTurn },
 	);
 }
 

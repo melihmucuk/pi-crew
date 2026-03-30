@@ -3,31 +3,46 @@ import {
 	getMarkdownTheme,
 } from "@mariozechner/pi-coding-agent";
 import { Box, Markdown, Text } from "@mariozechner/pi-tui";
+import {
+	type CrewResultMessageDetails,
+	STATUS_ICON,
+	getCrewResultTitle,
+} from "../steering.js";
+
+function getStatusColor(status: CrewResultMessageDetails["status"]): "success" | "error" | "warning" | "muted" {
+	switch (status) {
+		case "done":
+			return "success";
+		case "error":
+		case "aborted":
+			return "error";
+		case "running":
+		case "waiting":
+			return "warning";
+		default:
+			return "muted";
+	}
+}
 
 export function registerCrewMessageRenderers(pi: ExtensionAPI): void {
 	pi.registerMessageRenderer("crew-result", (message, { expanded }, theme) => {
-		const details = message.details as
-			| { agentId: string; agentName: string; error?: boolean }
-			| undefined;
-
-		const isError = details?.error ?? false;
-		const agentLabel = details
-			? `${details.agentName} (${details.agentId})`
-			: "agent";
-
-		const icon = isError ? theme.fg("error", "✗") : theme.fg("success", "✓");
-		const header = `${icon} ${theme.fg("toolTitle", theme.bold(agentLabel))}`;
+		const details = message.details as CrewResultMessageDetails | undefined;
+		const title = details ? getCrewResultTitle(details) : "Agent update";
+		const icon = details
+			? theme.fg(getStatusColor(details.status), STATUS_ICON[details.status])
+			: theme.fg("muted", "ℹ");
+		const header = `${icon} ${theme.fg("toolTitle", theme.bold(title))}`;
+		const body = details?.body ?? (!details && message.content ? String(message.content) : undefined);
 
 		const box = new Box(1, 1, (text) => theme.bg("customMessageBg", text));
 		box.addChild(new Text(header, 0, 0));
 
-		if (message.content) {
-			const content = String(message.content);
+		if (body) {
 			if (expanded) {
 				box.addChild(new Text("", 0, 0));
-				box.addChild(new Markdown(content, 0, 0, getMarkdownTheme()));
+				box.addChild(new Markdown(body, 0, 0, getMarkdownTheme()));
 			} else {
-				const lines = content.split("\n");
+				const lines = body.split("\n");
 				const preview = lines.slice(0, 5).join("\n");
 				box.addChild(new Text(theme.fg("dim", preview), 0, 0));
 				if (lines.length > 5) {

@@ -1,40 +1,26 @@
 import {
-	AuthStorage,
 	type CreateAgentSessionResult,
 	createAgentSession,
 	DefaultResourceLoader,
 	type ExtensionContext,
-	ModelRegistry,
 	SessionManager,
 	SettingsManager,
 } from "@mariozechner/pi-coding-agent";
 import type { AgentConfig } from "./agents.js";
-import {
-	createSupportedTools,
-	isSupportedToolName,
-	SUPPORTED_TOOL_NAMES,
-} from "./tool-registry.js";
+import { createSupportedTools, SUPPORTED_TOOL_NAMES } from "./tool-registry.js";
 
 function resolveTools(agentConfig: AgentConfig, cwd: string) {
-	const names = agentConfig.tools ?? SUPPORTED_TOOL_NAMES;
-	const invalidTools = names.filter((name) => !isSupportedToolName(name));
-	if (invalidTools.length > 0) {
-		console.warn(
-			`[pi-crew] Agent "${agentConfig.name}": unsupported tools ${invalidTools.map((name) => `"${name}"`).join(", ")}, ignoring`,
-		);
-	}
-	return createSupportedTools(names.filter(isSupportedToolName), cwd);
+	return createSupportedTools(agentConfig.tools ?? SUPPORTED_TOOL_NAMES, cwd);
 }
 
 function resolveModel(
 	agentConfig: AgentConfig,
 	ctx: ExtensionContext,
-	modelRegistry: ModelRegistry,
 ) {
 	const model = ctx.model;
 	if (!agentConfig.parsedModel) return model;
 
-	const found = modelRegistry.find(
+	const found = ctx.modelRegistry.find(
 		agentConfig.parsedModel.provider,
 		agentConfig.parsedModel.modelId,
 	);
@@ -73,9 +59,9 @@ export async function bootstrapSession(
 ): Promise<CreateAgentSessionResult> {
 	const { agentConfig, cwd, ctx, extensionResolvedPath, parentSessionFile } = opts;
 
-	const authStorage = AuthStorage.create();
-	const modelRegistry = new ModelRegistry(authStorage);
-	const model = resolveModel(agentConfig, ctx, modelRegistry);
+	const authStorage = ctx.modelRegistry.authStorage;
+	const modelRegistry = ctx.modelRegistry;
+	const model = resolveModel(agentConfig, ctx);
 	const tools = resolveTools(agentConfig, cwd);
 
 	const resourceLoader = new DefaultResourceLoader({

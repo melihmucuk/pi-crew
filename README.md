@@ -51,10 +51,12 @@ pi-crew ships with five agent definitions that cover common workflows:
 | Agent                | Purpose                                                                                                                  | Tools                      | Model             |
 | -------------------- | ------------------------------------------------------------------------------------------------------------------------ | -------------------------- | ----------------- |
 | **scout**            | Investigates codebase and returns structured findings. Read-only. Use before planning or implementing to gather context. | read, grep, find, ls, bash | claude-haiku-4-5  |
-| **planner**          | Analyzes requirements and produces a step-by-step implementation plan. Read-only. Does not write code. Interactive.       | read, grep, find, ls, bash | gpt-5.4           |
+| **planner**          | Analyzes requirements and produces a step-by-step implementation plan. Read-only. Does not write code. Interactive.      | read, grep, find, ls, bash | gpt-5.4           |
 | **code-reviewer**    | Reviews code changes for bugs, security issues, and correctness. Read-only. Does not fix issues.                         | read, grep, find, ls, bash | gpt-5.4           |
 | **quality-reviewer** | Reviews code structure for maintainability, duplication, and complexity. Read-only. Does not look for bugs.              | read, grep, find, ls, bash | gpt-5.4           |
 | **worker**           | Implements code changes, fixes, and refactors autonomously. Has full read-write access to the codebase.                  | all                        | claude-sonnet-4-6 |
+
+Read-only bundled agents still keep `bash` for inspection workflows like `git` and `ast-grep`. This is an instruction-level contract, not a sandbox boundary.
 
 ## Bundled Agents Setup
 
