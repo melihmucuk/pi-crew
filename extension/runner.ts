@@ -35,6 +35,16 @@ export interface AbortableAgentSummary {
 	agentName: string;
 }
 
+export interface AbortOwnedResult {
+	abortedIds: string[];
+	missingIds: string[];
+	foreignIds: string[];
+}
+
+interface AbortOptions {
+	reason: string;
+}
+
 function generateId(name: string, existingIds: Set<string>): string {
 	for (let i = 0; i < 10; i++) {
 		const id = `${name}-${randomBytes(4).toString("hex")}`;
@@ -83,6 +93,10 @@ function buildAbortableAgentSummary(state: SubagentState): AbortableAgentSummary
 		id: state.id,
 		agentName: state.agentConfig.name,
 	};
+}
+
+function isAbortableStatus(status: SubagentStatus): boolean {
+	return status === "running" || status === "waiting";
 }
 
 export class CrewManager {
@@ -347,21 +361,65 @@ export class CrewManager {
 		return {};
 	}
 
-	abort(id: string, pi: ExtensionAPI): boolean {
+	abort(id: string, pi: ExtensionAPI, opts: AbortOptions): boolean {
 		const state = this.activeAgents.get(id);
 		if (!state) return false;
 
 		state.session?.abort().catch(() => {});
-		this.settleAgent(state, "aborted", { error: "Aborted by user" }, pi);
+		this.settleAgent(state, "aborted", { error: opts.reason }, pi);
 		return true;
 	}
 
-	abortForOwner(ownerSessionId: string, pi: ExtensionAPI): void {
-		for (const [id, state] of this.activeAgents) {
-			if (state.ownerSessionId === ownerSessionId) {
-				this.abort(id, pi);
+	abortOwned(
+		ids: string[],
+		callerSessionId: string,
+		pi: ExtensionAPI,
+		opts: AbortOptions,
+	): AbortOwnedResult {
+		const uniqueIds = Array.from(new Set(ids.map((id) => id.trim()).filter(Boolean)));
+		const result: AbortOwnedResult = {
+			abortedIds: [],
+			missingIds: [],
+			foreignIds: [],
+		};
+
+		for (const id of uniqueIds) {
+			const state = this.activeAgents.get(id);
+			if (!state || !isAbortableStatus(state.status)) {
+				result.missingIds.push(id);
+				continue;
+			}
+			if (state.ownerSessionId !== callerSessionId) {
+				result.foreignIds.push(id);
+				continue;
+			}
+			if (this.abort(id, pi, opts)) {
+				result.abortedIds.push(id);
+			} else {
+				result.missingIds.push(id);
 			}
 		}
+
+		return result;
+	}
+
+	abortAllOwned(callerSessionId: string, pi: ExtensionAPI, opts: AbortOptions): string[] {
+		const ids = Array.from(this.activeAgents.values())
+			.filter(
+				(state) =>
+					state.ownerSessionId === callerSessionId && isAbortableStatus(state.status),
+			)
+			.map((state) => state.id);
+
+		for (const id of ids) {
+			this.abort(id, pi, opts);
+		}
+
+		return ids;
+	}
+
+	abortForOwner(ownerSessionId: string, pi: ExtensionAPI): void {
+		this.abortAllOwned(ownerSessionId, pi, { reason: "Aborted on session shutdown" });
 		this.pendingMessages = this.pendingMessages.filter(
 			(entry) => entry.ownerSessionId !== ownerSessionId,
 		);
@@ -369,16 +427,14 @@ export class CrewManager {
 
 	getAbortableAgents(): AbortableAgentSummary[] {
 		return Array.from(this.activeAgents.values())
-			.filter((state) => state.status === "running" || state.status === "waiting")
+			.filter((state) => isAbortableStatus(state.status))
 			.map(buildAbortableAgentSummary);
 	}
 
 	getActiveSummariesForOwner(ownerSessionId: string): ActiveAgentSummary[] {
 		return Array.from(this.activeAgents.values())
 			.filter(
-				(state) =>
-					(state.status === "running" || state.status === "waiting") &&
-					state.ownerSessionId === ownerSessionId,
+				(state) => isAbortableStatus(state.status) && state.ownerSessionId === ownerSessionId,
 			)
 			.map(buildActiveAgentSummary);
 	}

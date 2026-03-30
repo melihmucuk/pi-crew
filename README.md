@@ -10,7 +10,7 @@ pi install @melihmucuk/pi-crew
 
 ## How It Works
 
-pi-crew adds four tools and one command to your pi session:
+pi-crew adds five tools and one command to your pi session:
 
 ### `crew_list`
 
@@ -23,6 +23,23 @@ Spawns a subagent in an isolated session. The subagent runs in the background wi
 ```
 "spawn scout and find all API endpoints and their authentication methods"
 ```
+
+### `crew_abort`
+
+Aborts one, many, or all active subagents owned by the current session.
+
+Supported modes:
+- single: `subagent_id`
+- multiple: `subagent_ids`
+- all active in current session: `all: true`
+
+```
+"abort scout-a1b2"
+"abort scout-a1b2 and worker-c3d4"
+"abort all active subagents"
+```
+
+Tool-triggered aborts are reported back as steering messages with the reason `Aborted by tool request`.
 
 ### `crew_respond`
 
@@ -43,6 +60,7 @@ Closes an interactive subagent session when you no longer need it. This disposes
 ### `/crew-abort`
 
 Aborts a running subagent. Supports tab completion for subagent IDs.
+Unlike the `crew_abort` tool, this command is intentionally unrestricted and works as an emergency escape hatch across sessions.
 
 ## Bundled Subagents
 

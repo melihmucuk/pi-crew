@@ -23,11 +23,13 @@
 - `crew_done` only performs cleanup (dispose + remove from map). It must not send a steering message because the last subagent response was already delivered in the previous turn. Sending it again produces a duplicate message and an unnecessary turn.
 - Pending message flush in `activateSession` must be deferred to the next macrotask (`setTimeout`). Pi-core's `resume()` emits `session_switch` before reconnecting the agent event listener; synchronous delivery in that handler emits events on a disconnected listener, losing JSONL persistence for the custom message.
 - When other subagents for the same owner are still running, send a separate `crew-remaining` message after the `crew-result`. If the owner session is idle, queue the result first without triggering, then queue the remaining note with `triggerTurn: true` so the next turn sees both messages in order. If the owner session is already streaming, queue the remaining note after the result. Do not embed the remaining count in the result message itself.
+- Abort result messages must reflect the actual source. Use distinct reasons for tool-triggered aborts, command-triggered aborts, and session-shutdown cleanup. Do not hardcode a generic "Aborted by user" message for all paths.
 
 ### Session Isolation
 
 - Owner identity must use `sessionManager.getSessionId()`, not `getSessionFile()`. `getSessionFile()` returns `undefined` for in-memory sessions, causing all unsaved sessions to share the same owner identity.
-- Each subagent is owned by the session that spawned it. `crew_list`, `crew_respond`, `crew_done`, `session_shutdown`, and the status widget must restrict access to the owner session. Removing or bypassing ownership checks causes cross-session subagent interference.
+- Each subagent is owned by the session that spawned it. `crew_list`, `crew_abort`, `crew_respond`, `crew_done`, `session_shutdown`, and the status widget must restrict access to the owner session. Removing or bypassing ownership checks causes cross-session subagent interference.
+- `crew_abort` must only abort subagents owned by the current session. It supports single-id, multi-id, and abort-all modes.
 - `/crew-abort` is intentionally unrestricted — it serves as an emergency escape hatch across all sessions. Do not add ownership checks to it.
 
 ### Subagent Definitions

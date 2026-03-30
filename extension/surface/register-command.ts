@@ -20,7 +20,7 @@ export function registerCrewCommand(pi: ExtensionAPI, crewManager: CrewManager):
 			const trimmed = args.trim();
 
 			if (trimmed) {
-				const success = crewManager.abort(trimmed, pi);
+				const success = crewManager.abort(trimmed, pi, { reason: "Aborted by user command" });
 				if (!success) {
 					ctx.ui.notify(`No active subagent with id "${trimmed}"`, "error");
 				} else {
@@ -48,7 +48,7 @@ export function registerCrewCommand(pi: ExtensionAPI, crewManager: CrewManager):
 			const selectedOption = options.find((option) => option.label === selected);
 			if (!selectedOption) return;
 
-			const success = crewManager.abort(selectedOption.id, pi);
+			const success = crewManager.abort(selectedOption.id, pi, { reason: "Aborted by user command" });
 			if (success) {
 				ctx.ui.notify(`Subagent ${selectedOption.id} aborted`, "info");
 			} else {
