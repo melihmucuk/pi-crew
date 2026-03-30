@@ -8,8 +8,7 @@ Non-blocking subagent orchestration for [pi](https://pi.dev). Spawn isolated sub
 pi install @melihmucuk/pi-crew
 ```
 
-This installs the extension and bundled prompt template.
-If you want to use the bundled subagents like `code-reviewer` and `quality-reviewer`, complete the setup in [Bundled Subagents Setup](#bundled-subagents-setup) first.
+This installs the extension, bundled prompt template, and bundled subagent definitions. Bundled subagents are automatically discovered and ready to use without any extra setup.
 
 ## Architecture
 
@@ -75,7 +74,7 @@ Unlike the `crew_abort` tool, this command is intentionally unrestricted and wor
 Expands a bundled prompt template that orchestrates parallel code and quality reviews.
 Use it to review recent commits, staged changes, unstaged changes, and untracked files with `code-reviewer` and `quality-reviewer`, then merge both results into one report.
 
-Note: This prompt requires the `code-reviewer` and `quality-reviewer` subagent definitions to be present in `~/.pi/agent/agents/`. If you use the bundled subagents from this package, copy them first as described in the setup section below.
+Note: This prompt requires the `code-reviewer` and `quality-reviewer` subagent definitions. These are included as bundled subagents and work out of the box.
 
 ## Bundled Subagents
 
@@ -91,19 +90,19 @@ pi-crew ships with five subagent definitions that cover common workflows:
 
 Read-only bundled subagents still keep `bash` for inspection workflows like `git` and `ast-grep`. This is an instruction-level contract, not a sandbox boundary.
 
-## Bundled Subagents Setup
+## Subagent Discovery
 
-`pi install` only registers the extension. The bundled subagent definitions need to be copied to `~/.pi/agent/agents/` manually:
+Subagent definitions are discovered from three locations, in priority order:
 
-```bash
-mkdir -p ~/.pi/agent/agents && cp "$(npm root -g)/@melihmucuk/pi-crew/agents/"*.md ~/.pi/agent/agents/
-```
+1. **Project**: `<cwd>/.pi/agents/*.md`
+2. **User global**: `~/.pi/agent/agents/*.md`
+3. **Bundled**: shipped with this package
 
-Existing subagent files with the same name will be overwritten. Custom subagents in the same directory are not affected.
+When multiple sources define a subagent with the same `name`, the higher-priority source wins. This lets you override any bundled subagent by placing a file with the same name in your project or user directory.
 
 ## Custom Subagents
 
-Create `.md` files in `~/.pi/agent/agents/` with YAML frontmatter:
+Create `.md` files in `<cwd>/.pi/agents/` (project-level) or `~/.pi/agent/agents/` (global) with YAML frontmatter:
 
 ```markdown
 ---

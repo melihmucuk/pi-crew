@@ -13,7 +13,7 @@ export function registerCrewListTool({
 		name: "crew_list",
 		label: "List Crew",
 		description:
-			"List available subagent definitions (from ~/.pi/agent/agents/*.md, with optional global/project pi-crew.json overrides) and currently running subagents with their status.",
+			"List available subagent definitions (from <cwd>/.pi/agents/, ~/.pi/agent/agents/, and bundled agents, with optional global/project pi-crew.json overrides) and currently running subagents with their status.",
 		parameters: Type.Object({}),
 		promptSnippet: "List subagent definitions and active subagents",
 
@@ -28,7 +28,7 @@ export function registerCrewListTool({
 			lines.push("## Available subagents");
 			if (agents.length === 0) {
 				lines.push(
-					"No valid subagent definitions found. Add `.md` files to `~/.pi/agent/agents/`.",
+					"No valid subagent definitions found. Add `.md` files to `<cwd>/.pi/agents/` or `~/.pi/agent/agents/`.",
 				);
 			} else {
 				for (const agent of agents) {

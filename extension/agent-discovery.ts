@@ -1,5 +1,6 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { fileURLToPath } from "node:url";
 import type { ThinkingLevel } from "@mariozechner/pi-agent-core";
 import { getAgentDir, parseFrontmatter } from "@mariozechner/pi-coding-agent";
 import { type SupportedToolName, isSupportedToolName } from "./tool-registry.js";
@@ -706,36 +707,66 @@ function applyAgentOverride(agent: AgentConfig, override: AgentConfigOverride): 
 	};
 }
 
-export function discoverAgents(cwd: string = process.cwd()): AgentDiscoveryResult {
-	const agentsDir = path.join(getAgentDir(), "agents");
-	if (!fs.existsSync(agentsDir)) {
-		return { agents: [], warnings: [] };
-	}
+const bundledAgentsDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "agents");
+
+/**
+ * Loads agents from a single directory into the agents list.
+ * Skips agents whose name already exists in seenNames (higher-priority source wins).
+ * Within the same directory, duplicate names produce a warning.
+ */
+function loadAgentsFromDir(
+	agentsDir: string,
+	seenNames: Map<string, string>,
+	agents: AgentConfig[],
+	warnings: AgentDiscoveryWarning[],
+): void {
+	if (!fs.existsSync(agentsDir)) return;
 
 	const fileLoad = loadAgentDefinitionFiles(agentsDir);
-	const agents: AgentConfig[] = [];
-	const warnings: AgentDiscoveryWarning[] = [...fileLoad.warnings];
-	const seenNames = new Map<string, string>();
+	warnings.push(...fileLoad.warnings);
+
+	const dirNames = new Set<string>();
 
 	for (const filePath of fileLoad.filePaths) {
 		const loaded = loadAgentDefinitionFromFile(filePath);
 		warnings.push(...loaded.warnings);
 		if (!loaded.agent) continue;
 
-		const existing = seenNames.get(loaded.agent.name);
-		if (existing) {
+		const { name } = loaded.agent;
+
+		// Higher-priority source already registered this name
+		if (seenNames.has(name)) continue;
+
+		// Duplicate within the same directory
+		if (dirNames.has(name)) {
 			warnings.push(
 				createDiscoveryWarning(
 					filePath,
-					`Duplicate subagent name "${loaded.agent.name}" (already defined in ${existing}), skipping`,
+					`Duplicate subagent name "${name}" in ${agentsDir}, skipping`,
 				),
 			);
 			continue;
 		}
 
-		seenNames.set(loaded.agent.name, filePath);
+		dirNames.add(name);
+		seenNames.set(name, filePath);
 		agents.push(loaded.agent);
 	}
+}
+
+export function discoverAgents(cwd: string = process.cwd()): AgentDiscoveryResult {
+	const agents: AgentConfig[] = [];
+	const warnings: AgentDiscoveryWarning[] = [];
+	const seenNames = new Map<string, string>();
+
+	// Priority 1: project-level agents
+	loadAgentsFromDir(path.join(cwd, ".pi", "agents"), seenNames, agents, warnings);
+
+	// Priority 2: user global agents
+	loadAgentsFromDir(path.join(getAgentDir(), "agents"), seenNames, agents, warnings);
+
+	// Priority 3: bundled agents
+	loadAgentsFromDir(bundledAgentsDir, seenNames, agents, warnings);
 
 	const configOverrides = loadConfigOverrides(cwd);
 	warnings.push(...configOverrides.warnings);

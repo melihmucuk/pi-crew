@@ -38,6 +38,7 @@
 
 ### Subagent Definitions
 
+- Subagent definitions are discovered from three locations in priority order: project (`<cwd>/.pi/agents/`), user global (`~/.pi/agent/agents/`), bundled (`agents/` in the package). When the same name exists in multiple sources, the higher-priority source wins silently. Duplicate names within the same directory produce a warning.
 - The `model` field must use `provider/model-id` format (e.g., `anthropic/claude-haiku-4-5`). Values without `/` are ignored and the spawning session's model is used instead.
 - When `tools`/`skills` are omitted in frontmatter, the subagent gets access to all built-in tools/skills. An explicit empty list (`tools: []` or `tools:`) means no access. Do not conflate absent fields with empty fields.
 - `interactive: true` subagents keep their session alive after each response. The caller must close them with `crew_done`; otherwise the session stays in memory.
