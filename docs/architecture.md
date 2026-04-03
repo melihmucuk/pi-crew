@@ -732,6 +732,7 @@ Files:
 
 - `agents/scout.md`
 - `agents/planner.md`
+- `agents/oracle.md`
 - `agents/worker.md`
 - `agents/code-reviewer.md`
 - `agents/quality-reviewer.md`
@@ -742,6 +743,7 @@ They demonstrate how the extension is intended to be used:
 
 - `scout` for quick investigation
 - `planner` for interactive planning
+- `oracle` for decision evaluation and blind spot detection
 - `worker` for implementation
 - `code-reviewer` for correctness review
 - `quality-reviewer` for maintainability review
