@@ -3,7 +3,7 @@ import type {
 	ExtensionContext,
 } from "@mariozechner/pi-coding-agent";
 import { type AgentDiscoveryWarning } from "../agent-discovery.js";
-import type { CrewManager } from "../crew-manager.js";
+import type { CrewRuntime } from "../runtime/crew-runtime.js";
 import { registerCrewAbortTool } from "./tools/crew-abort.js";
 import { registerCrewDoneTool } from "./tools/crew-done.js";
 import { registerCrewListTool } from "./tools/crew-list.js";
@@ -12,7 +12,8 @@ import { registerCrewSpawnTool } from "./tools/crew-spawn.js";
 
 export function registerCrewTools(
 	pi: ExtensionAPI,
-	crewManager: CrewManager,
+	crew: CrewRuntime,
+	extensionDir: string,
 ): void {
 	const shownDiscoveryWarnings = new Set<string>();
 
@@ -29,7 +30,7 @@ export function registerCrewTools(
 		}
 	};
 
-	const deps = { pi, crewManager, notifyDiscoveryWarnings };
+	const deps = { pi, crew, extensionDir, notifyDiscoveryWarnings };
 	registerCrewListTool(deps);
 	registerCrewSpawnTool(deps);
 	registerCrewAbortTool(deps);

@@ -349,7 +349,7 @@ function parseSharedFields(record: Record<string, unknown>, options: ParseFieldO
 	};
 }
 
-export function parseAgentDefinition(content: string, filePath: string): ParseResult {
+function parseAgentDefinition(content: string, filePath: string): ParseResult {
 	const warnings: AgentDiscoveryWarning[] = [];
 
 	let frontmatter: Record<string, unknown>;

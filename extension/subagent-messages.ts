@@ -2,6 +2,8 @@ import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 
 export type SubagentStatus = "running" | "waiting" | "done" | "error" | "aborted";
 
+export type SendMessageFn = ExtensionAPI["sendMessage"];
+
 export const STATUS_ICON: Record<SubagentStatus, string> = {
 	running: "⏳",
 	waiting: "⏳",
@@ -21,6 +23,7 @@ export const STATUS_LABEL: Record<SubagentStatus, string> = {
 export interface SteeringPayload {
 	id: string;
 	agentName: string;
+	sessionFile?: string;
 	status: SubagentStatus;
 	result?: string;
 	error?: string;
@@ -29,6 +32,7 @@ export interface SteeringPayload {
 export interface CrewResultMessageDetails {
 	agentId: string;
 	agentName: string;
+	sessionFile?: string;
 	status: SubagentStatus;
 	body?: string;
 }
@@ -49,7 +53,7 @@ function getSteeringBody(payload: SteeringPayload): string | undefined {
 
 export function sendSteeringMessage(
 	payload: SteeringPayload,
-	pi: ExtensionAPI,
+	sendMessage: SendMessageFn,
 	opts: { isIdle: boolean; triggerTurn: boolean },
 ): void {
 	const body = getSteeringBody(payload);
@@ -69,12 +73,13 @@ export function sendSteeringMessage(
 		details: {
 			agentId: payload.id,
 			agentName: payload.agentName,
+			sessionFile: payload.sessionFile,
 			status: payload.status,
 			body,
 		} satisfies CrewResultMessageDetails,
 	};
 
-	pi.sendMessage(
+	sendMessage(
 		message,
 		opts.isIdle
 			? { triggerTurn: opts.triggerTurn }
@@ -84,12 +89,12 @@ export function sendSteeringMessage(
 
 export function sendRemainingNote(
 	remainingCount: number,
-	pi: ExtensionAPI,
+	sendMessage: SendMessageFn,
 	opts: { isIdle: boolean; triggerTurn: boolean },
 ): void {
 	if (remainingCount <= 0) return;
 
-	pi.sendMessage(
+	sendMessage(
 		{
 			customType: "crew-remaining",
 			content: `⏳ ${remainingCount} subagent(s) still running`,

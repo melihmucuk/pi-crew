@@ -7,7 +7,7 @@ import {
 } from "../tool-presentation.js";
 import type { CrewToolDeps } from "./tool-deps.js";
 
-export function registerCrewDoneTool({ pi, crewManager }: CrewToolDeps): void {
+export function registerCrewDoneTool({ pi, crew }: CrewToolDeps): void {
 	pi.registerTool({
 		name: "crew_done",
 		label: "Done with Crew",
@@ -20,7 +20,7 @@ export function registerCrewDoneTool({ pi, crewManager }: CrewToolDeps): void {
 
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			const callerSessionId = ctx.sessionManager.getSessionId();
-			const { error } = crewManager.done(params.subagent_id, callerSessionId);
+			const { error } = crew.done(params.subagent_id, callerSessionId);
 			if (error) return toolError(error);
 
 			return toolSuccess(`Subagent ${params.subagent_id} closed.`, {

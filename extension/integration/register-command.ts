@@ -1,12 +1,12 @@
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
-import type { CrewManager } from "../crew-manager.js";
+import type { CrewRuntime } from "../runtime/crew-runtime.js";
 
-export function registerCrewCommand(pi: ExtensionAPI, crewManager: CrewManager): void {
+export function registerCrewCommand(pi: ExtensionAPI, crew: CrewRuntime): void {
 	pi.registerCommand("pi-crew-abort", {
 		description: "Abort an active subagent",
 
 		getArgumentCompletions(argumentPrefix) {
-			const activeAgents = crewManager.getAbortableAgents();
+			const activeAgents = crew.getAbortableAgents();
 			if (activeAgents.length === 0) return null;
 			return activeAgents
 				.filter((agent) => agent.id.startsWith(argumentPrefix))
@@ -20,7 +20,7 @@ export function registerCrewCommand(pi: ExtensionAPI, crewManager: CrewManager):
 			const trimmed = args.trim();
 
 			if (trimmed) {
-				const success = crewManager.abort(trimmed, pi, { reason: "Aborted by user command" });
+				const success = crew.abort(trimmed, { reason: "Aborted by user command" });
 				if (!success) {
 					ctx.ui.notify(`No active subagent with id "${trimmed}"`, "error");
 				} else {
@@ -29,7 +29,7 @@ export function registerCrewCommand(pi: ExtensionAPI, crewManager: CrewManager):
 				return;
 			}
 
-			const activeAgents = crewManager.getAbortableAgents();
+			const activeAgents = crew.getAbortableAgents();
 			if (activeAgents.length === 0) {
 				ctx.ui.notify("No active subagents", "info");
 				return;
@@ -48,7 +48,7 @@ export function registerCrewCommand(pi: ExtensionAPI, crewManager: CrewManager):
 			const selectedOption = options.find((option) => option.label === selected);
 			if (!selectedOption) return;
 
-			const success = crewManager.abort(selectedOption.id, pi, { reason: "Aborted by user command" });
+			const success = crew.abort(selectedOption.id, { reason: "Aborted by user command" });
 			if (success) {
 				ctx.ui.notify(`Subagent ${selectedOption.id} aborted`, "info");
 			} else {

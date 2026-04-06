@@ -27,7 +27,7 @@ function formatAbortToolMessage(result: {
 	return parts.join("\n");
 }
 
-export function registerCrewAbortTool({ pi, crewManager }: CrewToolDeps): void {
+export function registerCrewAbortTool({ pi, crew }: CrewToolDeps): void {
 	pi.registerTool({
 		name: "crew_abort",
 		label: "Abort Crew",
@@ -64,7 +64,7 @@ export function registerCrewAbortTool({ pi, crewManager }: CrewToolDeps): void {
 			}
 
 			if (params.all) {
-				const abortedIds = crewManager.abortAllOwned(callerSessionId, pi, {
+				const abortedIds = crew.abortAllOwned(callerSessionId, {
 					reason: "Aborted by tool request",
 				});
 				if (abortedIds.length === 0) {
@@ -80,7 +80,7 @@ export function registerCrewAbortTool({ pi, crewManager }: CrewToolDeps): void {
 			const ids = params.subagent_id
 				? [params.subagent_id]
 				: (params.subagent_ids ?? []);
-			const result = crewManager.abortOwned(ids, callerSessionId, pi, {
+			const result = crew.abortOwned(ids, callerSessionId, {
 				reason: "Aborted by tool request",
 			});
 			const message = formatAbortToolMessage(result);

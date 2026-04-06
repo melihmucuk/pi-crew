@@ -20,7 +20,7 @@
 
 ### Message Delivery
 
-- Results must be routed to the owner session, not the currently active session. If the owner session is not active, queue the result and deliver on `session_start` (with `reason: "resume"` or `reason: "fork"`) when that owner becomes active. On `session_shutdown`, purge queued messages for the closing session to prevent memory leaks.
+- Results must be routed to the owner session, not the currently active session. If the owner session is not active, queue the result and deliver on `session_start` when that owner becomes active.
 - Check the owner session's streaming state before sending a subagent result. Use `{ triggerTurn: true }` when `isIdle() = true`, and `{ deliverAs: "steer", triggerTurn: true }` when `isIdle() = false`. Sending `deliverAs: "steer"` to an idle session causes the message to sit unprocessed because there is no active turn loop.
 - Subagent completion always sends the same steering message format: subagent name, id, status, and final message. Whether the subagent is interactive or not does not change this message; it only determines whether the session stays open.
 - `crew_respond` must be fire-and-forget. Blocking the caller session defeats the purpose of interactive subagents. Validate, return immediately, and deliver the result via steering message.
@@ -35,6 +35,13 @@
 - Each subagent is owned by the session that spawned it. `crew_list`, `crew_abort`, `crew_respond`, `crew_done`, `session_shutdown`, and the status widget must restrict access to the owner session. Removing or bypassing ownership checks causes cross-session subagent interference.
 - `crew_abort` must only abort subagents owned by the current session. It supports single-id, multi-id, and abort-all modes.
 - `/pi-crew-abort` is intentionally unrestricted — it serves as an emergency escape hatch across all sessions. Do not add ownership checks to it.
+
+### Session Lifecycle
+
+- `session_shutdown` must only deactivate delivery (`deactivateSession`), never abort subagents. Subagents continue running across session switches (`/new`, `/resume`, `/fork`) and deliver results when the owner session is reactivated.
+- Subagent abort must only happen on process exit (`SIGINT`, `SIGTERM`, `beforeExit`) via `abortAll()`. Do not add abort logic to `session_shutdown` — it creates race conditions with async extension hooks.
+- Avoid `setTimeout` flags to track session transitions. Pi's extension hooks can `await` and cause the flag to expire before `session_shutdown` fires. Instead, rely on process-level cleanup for abort and `flushPending` for message delivery.
+- Pending messages are preserved for inactive sessions. Use TTL-based cleanup (24 hours) to prevent unbounded memory growth. Messages older than TTL are discarded during `flushPending`.
 
 ### Subagent Definitions
 

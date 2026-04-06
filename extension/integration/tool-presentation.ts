@@ -1,5 +1,5 @@
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
-import { Text } from "@mariozechner/pi-tui";
+import { Box, Text } from "@mariozechner/pi-tui";
 
 export type ToolTheme = Parameters<Exclude<Parameters<ExtensionAPI["registerTool"]>[0]["renderCall"], undefined>>[1];
 export type ToolResult = { content: { type: string; text?: string }[]; details: unknown };
@@ -19,19 +19,18 @@ export function toolSuccess(text: string, details: Record<string, unknown> = {})
 	};
 }
 
-export function truncatePreview(text: string, max: number): string {
-	return text.length > max ? `${text.slice(0, max)}...` : text;
-}
-
 export function renderCrewCall(
 	theme: ToolTheme,
 	name: string,
 	id: string,
 	preview?: string,
-): Text {
-	let text = theme.fg("toolTitle", theme.bold(`${name} `)) + theme.fg("accent", id);
-	if (preview) text += theme.fg("dim", ` "${preview}"`);
-	return new Text(text, 0, 0);
+): Box {
+	const box = new Box(1, 1);
+	box.addChild(new Text(theme.fg("toolTitle", theme.bold(`${name} `)) + theme.fg("accent", id), 0, 0));
+	if (preview) {
+		box.addChild(new Text(theme.fg("dim", preview), 0, 0));
+	}
+	return box;
 }
 
 export function renderCrewResult(

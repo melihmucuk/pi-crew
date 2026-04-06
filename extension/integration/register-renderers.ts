@@ -37,6 +37,10 @@ export function registerCrewMessageRenderers(pi: ExtensionAPI): void {
 		const box = new Box(1, 1, (text) => theme.bg("customMessageBg", text));
 		box.addChild(new Text(header, 0, 0));
 
+		if (details?.sessionFile) {
+			box.addChild(new Text(theme.fg("muted", `📁 ${details.sessionFile}`), 0, 0));
+		}
+
 		if (body) {
 			if (expanded) {
 				box.addChild(new Text("", 0, 0));

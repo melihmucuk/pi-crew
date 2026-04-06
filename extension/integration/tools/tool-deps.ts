@@ -3,11 +3,12 @@ import type {
 	ExtensionContext,
 } from "@mariozechner/pi-coding-agent";
 import type { AgentDiscoveryWarning } from "../../agent-discovery.js";
-import type { CrewManager } from "../../crew-manager.js";
+import type { CrewRuntime } from "../../runtime/crew-runtime.js";
 
 export interface CrewToolDeps {
 	pi: ExtensionAPI;
-	crewManager: CrewManager;
+	crew: CrewRuntime;
+	extensionDir: string;
 	notifyDiscoveryWarnings: (
 		ctx: ExtensionContext,
 		warnings: AgentDiscoveryWarning[],

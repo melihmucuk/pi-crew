@@ -15,6 +15,8 @@ export interface SubagentState {
   model: string | undefined;
   error?: string;
   result?: string;
+  promptAbortController?: AbortController;
+  unsubscribe?: () => void;
 }
 
 export interface ActiveAgentSummary {

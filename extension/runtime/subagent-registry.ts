@@ -76,4 +76,10 @@ export class SubagentRegistry {
 			)
 			.map((state) => state.id);
 	}
+
+	getAllRunning(): SubagentState[] {
+		return Array.from(this.activeAgents.values()).filter((state) =>
+			isAbortableStatus(state.status),
+		);
+	}
 }

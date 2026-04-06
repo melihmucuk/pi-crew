@@ -1,6 +1,7 @@
 import type { ExtensionContext } from "@mariozechner/pi-coding-agent";
 import { Text } from "@mariozechner/pi-tui";
-import type { ActiveAgentSummary, CrewManager } from "./crew-manager.js";
+import type { ActiveAgentSummary } from "./runtime/crew-runtime.js";
+import type { CrewRuntime } from "./runtime/crew-runtime.js";
 
 const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 const SPINNER_INTERVAL_MS = 80;
@@ -53,14 +54,14 @@ function syncWidgetText(state: WidgetState, agents: ActiveAgentSummary[]): void 
 	state.tui.requestRender();
 }
 
-export function updateWidget(ctx: ExtensionContext, crewManager: CrewManager): void {
+export function updateWidget(ctx: ExtensionContext, crew: CrewRuntime): void {
 	if (!ctx.hasUI) {
 		clearWidget();
 		return;
 	}
 
 	const ownerSessionId = ctx.sessionManager.getSessionId();
-	const running = crewManager.getActiveSummariesForOwner(ownerSessionId);
+	const running = crew.getActiveSummariesForOwner(ownerSessionId);
 	if (running.length === 0) {
 		clearWidget();
 		return;
@@ -83,7 +84,7 @@ export function updateWidget(ctx: ExtensionContext, crewManager: CrewManager): v
 			tui,
 			frameIndex: 0,
 			timer: setInterval(() => {
-				const agents = crewManager.getActiveSummariesForOwner(ownerSessionId);
+				const agents = crew.getActiveSummariesForOwner(ownerSessionId);
 				if (agents.length === 0) {
 					clearWidget();
 					return;
