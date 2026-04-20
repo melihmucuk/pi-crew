@@ -1,7 +1,6 @@
 import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
-import { discoverAgents } from "./agent-discovery.js";
 import {
 	type AbortOwnedResult,
 	type AbortableAgentSummary,
@@ -9,7 +8,6 @@ import {
 	crewRuntime,
 } from "./runtime/crew-runtime.js";
 import { registerCrewIntegration } from "./integration.js";
-import { formatAgentsForPrompt } from "./prompt-injection.js";
 import { updateWidget } from "./status-widget.js";
 
 const extensionDir = dirname(fileURLToPath(import.meta.url));
@@ -34,17 +32,11 @@ function setupProcessHooks() {
 
 export default function (pi: ExtensionAPI) {
 	let currentCtx: ExtensionContext | undefined;
-	let cachedPromptSuffix = "";
 
 	setupProcessHooks();
 
 	const refreshWidget = () => {
 		if (currentCtx) updateWidget(currentCtx, crewRuntime);
-	};
-
-	const rebuildPromptCache = (cwd: string) => {
-		const { agents } = discoverAgents(cwd);
-		cachedPromptSuffix = formatAgentsForPrompt(agents);
 	};
 
 	const activateSession = (ctx: ExtensionContext) => {
@@ -61,7 +53,6 @@ export default function (pi: ExtensionAPI) {
 	};
 
 	pi.on("session_start", (_event, ctx) => {
-		rebuildPromptCache(ctx.cwd);
 		activateSession(ctx);
 	});
 
@@ -81,18 +72,6 @@ export default function (pi: ExtensionAPI) {
 		// Subagents continue running and will complete normally.
 		// Real cleanup happens in process exit hooks.
 		crewRuntime.deactivateSession(sessionId);
-	});
-
-	pi.on("before_agent_start", (event) => {
-		if (!cachedPromptSuffix) return;
-		const marker = "\nCurrent date: ";
-		const idx = event.systemPrompt.lastIndexOf(marker);
-		if (idx === -1) {
-			return { systemPrompt: event.systemPrompt + cachedPromptSuffix };
-		}
-		const before = event.systemPrompt.slice(0, idx);
-		const after = event.systemPrompt.slice(idx);
-		return { systemPrompt: before + cachedPromptSuffix + after };
 	});
 
 	registerCrewIntegration(pi, crewRuntime, extensionDir);

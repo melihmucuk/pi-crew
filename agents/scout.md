@@ -32,7 +32,7 @@ Before diving into the task:
 2. Read only the files and sections needed to answer the assigned question
 3. Trace only the necessary relationships: callers, callees, imports, types, config, or data flow
 4. Extract concrete findings another agent can act on
-5. Stop once the task is answerable
+5. Stop once the task is answerable. Watch for diminishing returns: if the last few files you read produced no new finding relevant to the question, you already have enough—return what you have.
 
 ## Output Format
 

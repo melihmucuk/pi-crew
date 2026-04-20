@@ -1,6 +1,6 @@
 {
   "name": "@melihmucuk/pi-crew",
-  "version": "1.0.9",
+  "version": "1.0.10",
   "type": "module",
   "description": "Non-blocking subagent orchestration for pi coding agent",
   "files": [

@@ -25,7 +25,7 @@ export function registerCrewListTool({
 
 			const lines: string[] = [];
 
-			lines.push("## Available subagents");
+			lines.push("## Available Subagents");
 			if (agents.length === 0) {
 				lines.push(
 					"No valid subagent definitions found. Add `.md` files to `<cwd>/.pi/agents/` or `~/.pi/agent/agents/`.",
@@ -33,20 +33,9 @@ export function registerCrewListTool({
 			} else {
 				for (const agent of agents) {
 					lines.push("");
-					lines.push(`**${agent.name}**`);
-					if (agent.description) lines.push(`  ${agent.description}`);
-					if (agent.model) lines.push(`  model: ${agent.model}`);
-					if (agent.interactive) lines.push("  interactive: true");
-					if (agent.tools !== undefined) {
-						lines.push(
-							`  tools: ${agent.tools.length > 0 ? agent.tools.join(", ") : "none"}`,
-						);
-					}
-					if (agent.skills !== undefined) {
-						lines.push(
-							`  skills: ${agent.skills.length > 0 ? agent.skills.join(", ") : "none"}`,
-						);
-					}
+					lines.push(`name: ${agent.name}`);
+					lines.push(`description: ${agent.description}`);
+					lines.push(`interactive: ${agent.interactive ? "true" : "false"}`);
 				}
 			}
 
@@ -59,18 +48,18 @@ export function registerCrewListTool({
 			}
 
 			lines.push("");
-			lines.push("## Active subagents");
+			lines.push("## Active Subagents");
 			if (running.length === 0) {
 				lines.push("No subagents currently active.");
 			} else {
 				for (const agent of running) {
 					const icon = STATUS_ICON[agent.status] ?? "❓";
 					lines.push("");
-					lines.push(
-						`**${agent.id}** (${agent.agentName}) — ${icon} ${agent.status}`,
-					);
-					lines.push(`  task: ${agent.taskPreview}`);
-					lines.push(`  turns: ${agent.turns}`);
+					lines.push(`id: ${agent.id}`);
+					lines.push(`name: ${agent.agentName}`);
+					lines.push(`status: ${icon} ${agent.status}`);
+					lines.push(`task: ${agent.taskPreview}`);
+					lines.push(`turns: ${agent.turns}`);
 				}
 			}
 
