@@ -34,6 +34,7 @@ interface AbortOptions {
 export interface SpawnContext {
 	model: Model<Api> | undefined;
 	modelRegistry: ModelRegistry;
+	agentDir: string;
 	parentSessionFile?: string;
 	onWarning?: (message: string) => void;
 }
@@ -42,6 +43,7 @@ function toBootstrapContext(ctx: SpawnContext): BootstrapContext {
 	return {
 		model: ctx.model,
 		modelRegistry: ctx.modelRegistry,
+		agentDir: ctx.agentDir,
 		parentSessionFile: ctx.parentSessionFile,
 	};
 }
@@ -401,13 +403,13 @@ class CrewRuntime {
 	}
 
 	/**
-	 * Abort all running subagents (process-level cleanup).
-	 * Called from process exit hooks.
+	 * Abort all running subagents during shutdown cleanup.
+	 * Called from SIGINT, session_shutdown(reason="quit"), and beforeExit fallback paths.
 	 */
 	abortAll(): void {
 		const allAgents = this.registry.getAllRunning();
 		for (const state of allAgents) {
-			this.abort(state.id, { reason: "Aborted on process exit" });
+			this.abort(state.id, { reason: "Aborted during shutdown" });
 		}
 	}
 

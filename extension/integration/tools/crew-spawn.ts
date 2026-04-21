@@ -1,3 +1,4 @@
+import { getAgentDir } from "@mariozechner/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
 import { discoverAgents } from "../../agent-discovery.js";
 import {
@@ -58,6 +59,7 @@ export function registerCrewSpawnTool({
         {
           model: ctx.model,
           modelRegistry: ctx.modelRegistry,
+          agentDir: getAgentDir(),
           parentSessionFile: ctx.sessionManager.getSessionFile(),
           onWarning: (msg) => ctx.ui.notify(msg, "warning"),
         },

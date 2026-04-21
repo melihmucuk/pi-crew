@@ -27,7 +27,7 @@
 - `crew_done` only performs cleanup (dispose + remove from map). It must not send a steering message because the last subagent response was already delivered in the previous turn. Sending it again produces a duplicate message and an unnecessary turn.
 - Pending message flush in `activateSession` must be deferred to the next macrotask (`setTimeout`). Pi-core's `resume()` emits `session_start` with `reason: "resume"` before reconnecting the agent event listener; synchronous delivery in that handler emits events on a disconnected listener, losing JSONL persistence for the custom message.
 - When other subagents for the same owner are still running, send a separate `crew-remaining` message after the `crew-result`. If the owner session is idle, queue the result first without triggering, then queue the remaining note with `triggerTurn: true` so the next turn sees both messages in order. If the owner session is already streaming, queue the remaining note after the result. Do not embed the remaining count in the result message itself.
-- Abort result messages must reflect the actual source. Use distinct reasons for tool-triggered aborts, command-triggered aborts, and session-shutdown cleanup. Do not hardcode a generic "Aborted by user" message for all paths.
+- Abort result messages must reflect the actual source. Use distinct reasons for tool-triggered aborts, command-triggered aborts, and shutdown cleanup. Do not hardcode a generic "Aborted by user" message for all paths.
 
 ### Session Isolation
 
@@ -38,9 +38,9 @@
 
 ### Session Lifecycle
 
-- `session_shutdown` must only deactivate delivery (`deactivateSession`), never abort subagents. Subagents continue running across session switches (`/new`, `/resume`, `/fork`) and deliver results when the owner session is reactivated.
-- Subagent abort must only happen on process exit (`SIGINT`, `SIGTERM`, `beforeExit`) via `abortAll()`. Do not add abort logic to `session_shutdown` — it creates race conditions with async extension hooks.
-- Avoid `setTimeout` flags to track session transitions. Pi's extension hooks can `await` and cause the flag to expire before `session_shutdown` fires. Instead, rely on process-level cleanup for abort and `flushPending` for message delivery.
+- `session_shutdown` must always deactivate delivery (`deactivateSession`). On replacement paths (`reload`, `new`, `resume`, `fork`), stop there. On `quit`, also abort running subagents. Pi now provides `session_shutdown.reason` (`quit | reload | new | resume | fork`) plus optional `targetSessionFile`; use that metadata directly instead of pre-switch hacks.
+- Shutdown cleanup is split by source: `SIGINT` aborts via the process hook, Pi-managed graceful quit paths abort via `session_shutdown.reason === "quit"`, and `beforeExit` remains a fallback.
+- Avoid `setTimeout` flags to track session transitions. Pi's extension hooks can `await` and cause the flag to expire before `session_shutdown` fires. Instead, rely on `session_shutdown` reason handling plus `flushPending` for message delivery.
 - Pending messages are preserved for inactive sessions. Use TTL-based cleanup (24 hours) to prevent unbounded memory growth. Messages older than TTL are discarded during `flushPending`.
 
 ### Subagent Definitions

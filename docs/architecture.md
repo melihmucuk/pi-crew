@@ -20,7 +20,7 @@ Primary components:
 
 ### 2.1 CrewRuntime singleton
 
-`CrewRuntime` is a process-level singleton that survives pi runtime replacement (`/resume`, `/new`, `/fork`). When pi discards an old extension instance and creates a new one, the new instance reconnects to the same `crewRuntime` and picks up existing subagent state.
+`CrewRuntime` is a process-level singleton that survives pi runtime replacement (`/resume`, `/new`, `/fork`, `/reload`). When pi discards an old extension instance and creates a new one, the new instance reconnects to the same `crewRuntime` and picks up existing subagent state.
 
 Responsibilities:
 
@@ -35,7 +35,7 @@ Routes subagent results to the correct session at the correct time. Key behavior
 
 - Tracks active session via `ActiveRuntimeBinding` (set on `session_start`, cleared on `session_shutdown`)
 - Queues results when owner session is inactive
-- Flushes queued results when owner session activates (`session_start` with `reason: "resume"` or `"fork"`)
+- Flushes queued results when owner session activates on any `session_start`; resume/fork are the important replacement paths because subagents survive runtime replacement within the same process
 - Uses `triggerTurn: false/true` split to preserve ordering between `crew-result` and `crew-remaining`
 
 Underlying delivery: see pi's `sendMessage({ deliverAs, triggerTurn })` in extensions.md.
@@ -115,7 +115,7 @@ Invariants:
 
 1. `crew_list`, `crew_abort`, `crew_respond`, `crew_done`, status widget: session-scoped. Only owner sees/controls.
 2. `/pi-crew-abort`: cross-session emergency escape hatch.
-3. `session_shutdown` deactivates delivery binding only; subagents continue running. Abort happens on process exit.
+3. `session_shutdown` always deactivates delivery binding. On replacement paths (`reload`, `new`, `resume`, `fork`), subagents continue running. On `quit`, the extension aborts all running subagents. `SIGINT` also aborts via a process hook, and `beforeExit` remains a fallback.
 
 ## 7. Subagent definition model
 
@@ -147,6 +147,7 @@ JSON overrides: `~/.pi/agent/pi-crew.json` (global), `<cwd>/.pi/pi-crew.json` (p
 7. `crew-result` messages appear before `crew-remaining` notes (ordering via `triggerTurn` split).
 8. Pending messages preserved for inactive sessions; TTL (24h) prevents memory leak.
 9. Active subagent state survives runtime replacement within same process.
+10. Graceful quit aborts subagents through `session_shutdown.reason === "quit"`; replacement paths do not.
 
 ## 9. Reading guide
 

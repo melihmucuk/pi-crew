@@ -8,10 +8,10 @@ import {
 } from "@mariozechner/pi-coding-agent";
 import type { Api, Model } from "@mariozechner/pi-ai";
 import type { AgentConfig } from "./agent-discovery.js";
-import { createSupportedTools, SUPPORTED_TOOL_NAMES } from "./tool-registry.js";
+import { SUPPORTED_TOOL_NAMES, type SupportedToolName } from "./tool-registry.js";
 
-function resolveTools(agentConfig: AgentConfig, cwd: string) {
-  return createSupportedTools(agentConfig.tools ?? SUPPORTED_TOOL_NAMES, cwd);
+function resolveTools(agentConfig: AgentConfig): SupportedToolName[] {
+  return [...(agentConfig.tools ?? SUPPORTED_TOOL_NAMES)];
 }
 
 function resolveModel(agentConfig: AgentConfig, ctx: BootstrapContext): { model: Model<Api> | undefined; warnings: string[] } {
@@ -54,6 +54,7 @@ function getSkillWarnings(
 export interface BootstrapContext {
   model: Model<Api> | undefined;
   modelRegistry: ModelRegistry;
+  agentDir: string;
   parentSessionFile?: string;
 }
 
@@ -79,10 +80,11 @@ export async function bootstrapSession(
   const modelRegistry = ctx.modelRegistry;
   const { model, warnings: modelWarnings } = resolveModel(agentConfig, ctx);
   warnings.push(...modelWarnings);
-  const tools = resolveTools(agentConfig, cwd);
+  const tools = resolveTools(agentConfig);
 
   const resourceLoader = new DefaultResourceLoader({
     cwd,
+    agentDir: ctx.agentDir,
     extensionsOverride: (base) => ({
       ...base,
       extensions: base.extensions.filter(
@@ -114,6 +116,7 @@ export async function bootstrapSession(
 
   const result = await createAgentSession({
     cwd,
+    agentDir: ctx.agentDir,
     model,
     thinkingLevel: agentConfig.thinking,
     tools,

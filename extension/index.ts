@@ -19,14 +19,10 @@ function setupProcessHooks() {
 	if (processHooksSetup) return;
 	processHooksSetup = true;
 
-	const abortAndExit = (signal: string) => {
+	process.once('SIGINT', () => {
 		crewRuntime.abortAll();
-		// Re-raise to restore default Node termination behavior
-		process.exit(128 + (signal === 'SIGINT' ? 2 : 15));
-	};
-
-	process.once('SIGINT', () => abortAndExit('SIGINT'));
-	process.once('SIGTERM', () => abortAndExit('SIGTERM'));
+		process.exit(130);
+	});
 	process.on('beforeExit', () => crewRuntime.abortAll());
 }
 
@@ -56,22 +52,13 @@ export default function (pi: ExtensionAPI) {
 		activateSession(ctx);
 	});
 
-	pi.on("session_before_switch", () => {
-		// Session is about to switch - no action needed here.
-		// Subagent cleanup is handled by process hooks, not session_shutdown.
-	});
-
-	pi.on("session_before_fork", () => {
-		// Session is about to fork - no action needed here.
-		// Subagent cleanup is handled by process hooks, not session_shutdown.
-	});
-
-	pi.on("session_shutdown", (_event, ctx) => {
+	pi.on("session_shutdown", (event, ctx) => {
 		const sessionId = ctx.sessionManager.getSessionId();
-		// Deactivate delivery to this session, but don't abort subagents.
-		// Subagents continue running and will complete normally.
-		// Real cleanup happens in process exit hooks.
 		crewRuntime.deactivateSession(sessionId);
+
+		if (event.reason === "quit") {
+			crewRuntime.abortAll();
+		}
 	});
 
 	registerCrewIntegration(pi, crewRuntime, extensionDir);

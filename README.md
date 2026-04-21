@@ -58,7 +58,7 @@ Supported modes:
 "abort all active subagents"
 ```
 
-Tool-triggered aborts are reported back as steering messages with the reason `Aborted by tool request`.
+Tool-triggered aborts are reported back as steering messages with the reason `Aborted by tool request`. User-command aborts and shutdown-triggered aborts use distinct reasons.
 
 ### `crew_respond`
 
@@ -194,6 +194,8 @@ Override values replace the matching frontmatter fields for the named subagent a
 ## Status Widget
 
 When the current session owns active subagents, a live status widget appears in the TUI for that session, showing each subagent's ID, model, turn count, and context token usage.
+
+On session replacement paths such as `/new`, `/resume`, `/fork`, and `/reload`, subagents keep running and reconnect to the owner session when it becomes active again. On real quit, pi-crew aborts running subagents during shutdown.
 
 ```
 ⠹ scout-a1b2 (claude-haiku-4-5) · turn 3 · 12.5k ctx
