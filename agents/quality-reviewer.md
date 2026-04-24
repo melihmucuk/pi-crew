@@ -1,7 +1,6 @@
 ---
 name: quality-reviewer
 description: Reviews code structure for maintainability, duplication, and complexity. Read-only. Does not look for bugs.
-model: openai-codex/gpt-5.4
 thinking: high
 tools: read, grep, find, ls, bash
 ---
