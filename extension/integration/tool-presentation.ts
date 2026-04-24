@@ -1,8 +1,9 @@
+import type { AgentToolResult } from "@mariozechner/pi-agent-core";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { Box, Text } from "@mariozechner/pi-tui";
 
 export type ToolTheme = Parameters<Exclude<Parameters<ExtensionAPI["registerTool"]>[0]["renderCall"], undefined>>[1];
-export type ToolResult = { content: { type: string; text?: string }[]; details: unknown };
+export type ToolResult = AgentToolResult<unknown>;
 
 export function toolError(text: string) {
 	return {
@@ -12,10 +13,15 @@ export function toolError(text: string) {
 	};
 }
 
-export function toolSuccess(text: string, details: Record<string, unknown> = {}) {
+export function toolSuccess(
+	text: string,
+	details: Record<string, unknown> = {},
+	options: { terminate?: boolean } = {},
+) {
 	return {
 		content: [{ type: "text" as const, text }],
 		details,
+		...(options.terminate ? { terminate: true } : {}),
 	};
 }
 

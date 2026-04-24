@@ -1,6 +1,6 @@
 {
   "name": "@melihmucuk/pi-crew",
-  "version": "1.0.12",
+  "version": "1.0.13",
   "type": "module",
   "description": "Non-blocking subagent orchestration for pi coding agent",
   "files": [
@@ -39,15 +39,15 @@
     "@mariozechner/pi-ai": "*",
     "@mariozechner/pi-coding-agent": "*",
     "@mariozechner/pi-tui": "*",
-    "@sinclair/typebox": "*"
+    "typebox": "*"
   },
   "devDependencies": {
-    "@mariozechner/pi-agent-core": "^0.68.0",
-    "@mariozechner/pi-ai": "^0.68.0",
-    "@mariozechner/pi-coding-agent": "^0.68.0",
-    "@mariozechner/pi-tui": "^0.68.0",
-    "@sinclair/typebox": "^0.34.49",
+    "@mariozechner/pi-agent-core": "^0.70.0",
+    "@mariozechner/pi-ai": "^0.70.0",
+    "@mariozechner/pi-coding-agent": "^0.70.0",
+    "@mariozechner/pi-tui": "^0.70.0",
     "@types/node": "^22.19.17",
+    "typebox": "^1.1.33",
     "typescript": "^5.9.3"
   }
 }

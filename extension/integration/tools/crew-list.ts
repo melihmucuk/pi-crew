@@ -1,7 +1,7 @@
 import { Text } from "@mariozechner/pi-tui";
-import { Type } from "@sinclair/typebox";
+import { Type } from "typebox";
 import { discoverAgents } from "../../agent-discovery.js";
-import { STATUS_ICON } from "../../subagent-messages.js";
+import { STATUS_ICON, sendCrewListActiveWarning } from "../../subagent-messages.js";
 import type { CrewToolDeps } from "./tool-deps.js";
 
 export function registerCrewListTool({
@@ -28,11 +28,6 @@ export function registerCrewListTool({
 			const running = crew.getActiveSummariesForOwner(callerSessionId);
 
 			const lines: string[] = [];
-
-			if (running.length > 0) {
-				lines.push("⚠ Active subagents detected. Do not poll crew_list for completion — results arrive as steering messages. Continue with unrelated work or end your turn and wait for the steering messages.");
-				lines.push("");
-			}
 
 			lines.push("## Available Subagents");
 			if (agents.length === 0) {
@@ -67,12 +62,20 @@ export function registerCrewListTool({
 					lines.push(`id: ${agent.id}`);
 					lines.push(`name: ${agent.agentName}`);
 					lines.push(`status: ${icon} ${agent.status}`);
-					lines.push(`task: ${agent.taskPreview}`);
-					lines.push(`turns: ${agent.turns}`);
 				}
 			}
 
 			const text = lines.join("\n");
+
+			if (running.length > 0) {
+				Promise.resolve().then(() => {
+					sendCrewListActiveWarning(pi.sendMessage.bind(pi), {
+						isIdle: ctx.isIdle(),
+						triggerTurn: true,
+					});
+				});
+			}
+
 			return { content: [{ type: "text", text }], details: {} };
 		},
 

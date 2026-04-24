@@ -1,4 +1,4 @@
-import { Type } from "@sinclair/typebox";
+import { Type } from "typebox";
 import {
 	renderCrewCall,
 	renderCrewResult,
@@ -74,6 +74,7 @@ export function registerCrewAbortTool({ pi, crew }: CrewToolDeps): void {
 				return toolSuccess(
 					`Aborted ${abortedIds.length} subagent(s): ${abortedIds.join(", ")}`,
 					{ ids: abortedIds },
+					{ terminate: true },
 				);
 			}
 
@@ -89,11 +90,15 @@ export function registerCrewAbortTool({ pi, crew }: CrewToolDeps): void {
 				return toolError(message || "No subagents were aborted.");
 			}
 
-			return toolSuccess(message, {
-				ids: result.abortedIds,
-				missing_ids: result.missingIds,
-				foreign_ids: result.foreignIds,
-			});
+			return toolSuccess(
+				message,
+				{
+					ids: result.abortedIds,
+					missing_ids: result.missingIds,
+					foreign_ids: result.foreignIds,
+				},
+				{ terminate: true },
+			);
 		},
 
 		renderCall(args, theme, _context) {

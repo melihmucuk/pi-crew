@@ -23,7 +23,6 @@ export interface ActiveAgentSummary {
   id: string;
   agentName: string;
   status: SubagentStatus;
-  taskPreview: string;
   turns: number;
   contextTokens: number;
   model: string | undefined;
@@ -54,13 +53,10 @@ export function isAbortableStatus(status: SubagentStatus): boolean {
 export function buildActiveAgentSummary(
   state: SubagentState,
 ): ActiveAgentSummary {
-  const taskPreview =
-    state.task.length > 80 ? `${state.task.slice(0, 80)}...` : state.task;
   return {
     id: state.id,
     agentName: state.agentConfig.name,
     status: state.status,
-    taskPreview,
     turns: state.turns,
     contextTokens: state.contextTokens,
     model: state.model,

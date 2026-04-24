@@ -9,6 +9,9 @@ import {
 	getCrewResultTitle,
 } from "../subagent-messages.js";
 
+type MessageRenderer = Parameters<ExtensionAPI["registerMessageRenderer"]>[1];
+type MessageRendererTheme = Parameters<MessageRenderer>[2];
+
 function getStatusColor(status: CrewResultMessageDetails["status"]): "success" | "error" | "warning" | "muted" {
 	switch (status) {
 		case "done":
@@ -22,6 +25,12 @@ function getStatusColor(status: CrewResultMessageDetails["status"]): "success" |
 		default:
 			return "muted";
 	}
+}
+
+function renderWarningMessage(content: unknown, theme: MessageRendererTheme): Box {
+	const box = new Box(1, 1, (text) => theme.bg("customMessageBg", text));
+	box.addChild(new Text(theme.fg("warning", String(content ?? "")), 0, 0));
+	return box;
 }
 
 export function registerCrewMessageRenderers(pi: ExtensionAPI): void {
@@ -59,8 +68,10 @@ export function registerCrewMessageRenderers(pi: ExtensionAPI): void {
 	});
 
 	pi.registerMessageRenderer("crew-remaining", (message, _options, theme) => {
-		const box = new Box(1, 1, (text) => theme.bg("customMessageBg", text));
-		box.addChild(new Text(theme.fg("warning", String(message.content ?? "")), 0, 0));
-		return box;
+		return renderWarningMessage(message.content, theme);
+	});
+
+	pi.registerMessageRenderer("crew-list-warning", (message, _options, theme) => {
+		return renderWarningMessage(message.content, theme);
 	});
 }

@@ -105,3 +105,20 @@ export function sendRemainingNote(
 			: { deliverAs: "steer", triggerTurn: opts.triggerTurn },
 	);
 }
+
+export function sendCrewListActiveWarning(
+	sendMessage: SendMessageFn,
+	opts: { isIdle: boolean; triggerTurn: boolean },
+): void {
+	sendMessage(
+		{
+			customType: "crew-list-warning",
+			content:
+				"⚠ Active subagents detected. Do not poll crew_list for completion — results arrive as steering messages. Continue with unrelated work or end your turn and wait for the steering messages.",
+			display: true,
+		},
+		opts.isIdle
+			? { triggerTurn: opts.triggerTurn }
+			: { deliverAs: "steer", triggerTurn: opts.triggerTurn },
+	);
+}

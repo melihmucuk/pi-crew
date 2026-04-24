@@ -1,4 +1,4 @@
-import { Type } from "@sinclair/typebox";
+import { Type } from "typebox";
 import {
 	renderCrewCall,
 	renderCrewResult,
@@ -23,9 +23,12 @@ export function registerCrewDoneTool({ pi, crew }: CrewToolDeps): void {
 			const { error } = crew.done(params.subagent_id, callerSessionId);
 			if (error) return toolError(error);
 
-			return toolSuccess(`Subagent ${params.subagent_id} closed.`, {
-				id: params.subagent_id,
-			});
+			return toolSuccess(
+				`Subagent ${params.subagent_id} closed.`,
+				{
+					id: params.subagent_id,
+				},
+			);
 		},
 
 		renderCall(args, theme, _context) {

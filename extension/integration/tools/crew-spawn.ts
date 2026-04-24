@@ -1,5 +1,5 @@
 import { getAgentDir } from "@mariozechner/pi-coding-agent";
-import { Type } from "@sinclair/typebox";
+import { Type } from "typebox";
 import { discoverAgents } from "../../agent-discovery.js";
 import {
   renderCrewCall,
