@@ -1,6 +1,7 @@
 ---
 name: planner
 description: Analyzes requirements and produces a step-by-step implementation plan. Read-only. Does not write code.
+model: openai-codex/gpt-5.4
 thinking: high
 tools: read, grep, find, ls, bash
 interactive: true

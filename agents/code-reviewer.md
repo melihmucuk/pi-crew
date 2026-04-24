@@ -1,6 +1,7 @@
 ---
 name: code-reviewer
 description: Reviews code changes for bugs, security issues, and correctness. Read-only. Does not fix issues.
+model: openai-codex/gpt-5.4
 thinking: high
 tools: read, grep, find, ls, bash
 ---

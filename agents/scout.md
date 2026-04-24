@@ -1,6 +1,7 @@
 ---
 name: scout
 description: Investigates codebase and returns structured findings. Read-only. Use before planning or implementing to gather context.
+model: anthropic/claude-haiku-4-5
 thinking: minimal
 tools: read, grep, find, ls, bash
 ---

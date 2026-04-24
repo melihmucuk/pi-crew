@@ -1,6 +1,7 @@
 ---
 name: worker
 description: Implements code changes, fixes, and refactors autonomously. Has full read-write access to the codebase.
+model: anthropic/claude-sonnet-4-6
 thinking: medium
 ---
 
