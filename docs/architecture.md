@@ -13,6 +13,7 @@ Primary components:
 - `extension/runtime/crew-runtime.ts` - Process-level singleton owning all subagent state
 - `extension/runtime/subagent-registry.ts` - In-memory subagent registry
 - `extension/runtime/delivery-coordinator.ts` - Owner-based result routing
+- `extension/runtime/overflow-recovery.ts` - Context overflow retry tracking for subagent prompts
 - `extension/bootstrap-session.ts` - Subagent session construction with extension filtering
 - `extension/agent-discovery.ts` - Subagent definition discovery and validation
 
@@ -26,6 +27,7 @@ Responsibilities:
 
 - Create subagent state records
 - Bootstrap isolated subagent sessions
+- Run subagent prompt cycles with overflow recovery
 - Transition subagents between states
 - Deliver results to owner sessions
 
@@ -40,7 +42,19 @@ Routes subagent results to the correct session at the correct time. Key behavior
 
 Underlying delivery: see pi's `sendMessage({ deliverAs, triggerTurn })` in extensions.md.
 
-### 2.3 Subagent registry
+`crew_list` uses the same idle/streaming delivery rules for its `crew-list-warning` custom message when active subagents exist. The warning is separate from tool output so the list remains a one-time snapshot while anti-polling guidance is delivered as a visible message.
+
+### 2.3 Overflow recovery
+
+Subagent prompt cycles are wrapped by overflow recovery tracking. The tracker observes `agent_end`, `compaction_start`, `compaction_end`, `auto_retry_start`, and `auto_retry_end` events to distinguish normal completion from context-overflow compaction and retry.
+
+Outcomes:
+
+- No overflow observed → prompt outcome is based on the final assistant message.
+- Overflow compaction completes with retry and the retry reaches a terminal `agent_end` → recovered; prompt outcome is based on the final assistant message.
+- Overflow handling times out, is cancelled, or compaction does not retry → failed; the subagent settles as `error` unless the final assistant message already reported an error.
+
+### 2.4 Subagent registry
 
 In-memory, process-scoped: `Map<subagentId, SubagentState>`
 
@@ -80,7 +94,7 @@ Critical: `deliverAs: "steer"` to an idle session leaves the message unprocessed
 
 ### 4.3 Deferred flush
 
-Pending message flush after `session_start` is deferred to next macrotask. Synchronous delivery loses custom message persistence (pi-core emits `session_start` before reconnecting agent listener during resume).
+Pending message flush after `session_start` is deferred to next macrotask. Synchronous delivery loses custom message persistence (pi-core emits `session_start` before reconnecting agent listener during resume). While a flush is scheduled, new deliveries for that owner are queued so ordering is preserved.
 
 ### 4.4 TTL cleanup
 
@@ -108,6 +122,10 @@ After prompt cycle completion, inspect assistant stop reason:
 ### 5.3 Interactive subagents
 
 `interactive: true` subagents enter `waiting` after each response. They accept follow-up messages via `crew_respond` until explicitly closed with `crew_done`. Closing does NOT emit a duplicate `crew-result`.
+
+### 5.4 Tool completion behavior
+
+`crew_respond` returns immediately and delivers the subagent response asynchronously. Successful `crew_abort` results terminate the current tool turn after aborting owned subagents.
 
 ## 6. Ownership and isolation
 
@@ -145,9 +163,10 @@ JSON overrides: `~/.pi/agent/pi-crew.json` (global), `<cwd>/.pi/pi-crew.json` (p
 5. `crew_done` cleans up only; no duplicate result message.
 6. Queued results flush when owner session becomes active.
 7. `crew-result` messages appear before `crew-remaining` notes (ordering via `triggerTurn` split).
-8. Pending messages preserved for inactive sessions; TTL (24h) prevents memory leak.
-9. Active subagent state survives runtime replacement within same process.
-10. Graceful quit aborts subagents through `session_shutdown.reason === "quit"`; replacement paths do not.
+8. `crew-list-warning` is delivered as a separate custom message when `crew_list` is called while the owner has active subagents.
+9. Pending messages preserved for inactive sessions; TTL (24h) prevents memory leak.
+10. Active subagent state survives runtime replacement within same process.
+11. Graceful quit aborts subagents through `session_shutdown.reason === "quit"`; replacement paths do not.
 
 ## 9. Reading guide
 
