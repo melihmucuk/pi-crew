@@ -183,5 +183,4 @@ JSON overrides: `~/.pi/agent/pi-crew.json` (global), `<cwd>/.pi/pi-crew.json` (p
 
 ```bash
 npm run typecheck
-npm run build
 ```

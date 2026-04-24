@@ -4,7 +4,7 @@
   "type": "module",
   "description": "Non-blocking subagent orchestration for pi coding agent",
   "files": [
-    "dist/",
+    "extension/",
     "agents/",
     "prompts/",
     "docs/architecture.md"
@@ -21,7 +21,7 @@
   ],
   "pi": {
     "extensions": [
-      "./dist/index.js"
+      "./extension/index.ts"
     ],
     "prompts": [
       "./prompts"
@@ -29,10 +29,7 @@
     "video": "https://monkeys-team.ams3.cdn.digitaloceanspaces.com/pi-crew-demo.mp4"
   },
   "scripts": {
-    "clean": "rm -rf dist",
-    "build": "npm run clean && tsc",
-    "typecheck": "tsc --noEmit",
-    "prepare": "npm run build"
+    "typecheck": "tsc --noEmit"
   },
   "peerDependencies": {
     "@mariozechner/pi-agent-core": "*",
