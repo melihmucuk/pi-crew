@@ -1,6 +1,6 @@
 ---
 name: pi-crew
-description: "MUST be read before using crew_list, crew_spawn, crew_respond, crew_done, or crew_abort. Use to delegate bounded research, review, coding, or testing to non-blocking background subagents that run in isolated sessions while your session stays interactive; you own decomposition, scope, result vetting, and final synthesis."
+description: "MUST read before crew tools. Delegate bounded work to async subagents; you own scope, vetting, and synthesis."
 ---
 
 # Pi Crew
