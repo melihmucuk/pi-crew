@@ -1,7 +1,7 @@
 ---
 name: code-reviewer
 description: Reviews scoped code for actionable bugs. Does not modify files; may run typecheck and tests.
-model: openai-codex/gpt-5.5
+model: openai-codex/gpt-5.6-sol
 thinking: high
 tools: read, grep, find, ls, bash
 ---
@@ -50,6 +50,11 @@ Report the same pattern at most twice, then list remaining locations.
 ## Output
 
 If no findings: **No issues found.**
+
+For full/codebase reviews, always append:
+
+Reviewed: files or areas directly inspected
+Skipped: files or areas not inspected
 
 For each finding:
 

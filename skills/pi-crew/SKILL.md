@@ -25,6 +25,7 @@ A subagent runs isolated from your session but inside the same repository:
 - It sees only the `task` you write plus what it can read from the working directory. Every subagent can read repo files, config, and persistent docs to gather context on its own; whether it can also edit files or run commands depends on the chosen subagent's tools (see `crew_list`).
 - It cannot see your session conversation, your reasoning, user decisions, or prior subagent results unless they are written to a durable file. Put any such context the subagent needs directly in the task.
 - Do not dump context the subagent can find itself (repo structure, conventions, Git state, changed-file lists). Do include session-only intent, decisions, and conclusions it cannot discover.
+- Write the task in the user's language; if that is impractical or ambiguous, state the expected response language explicitly.
 - State the exact output you need (deliverable, format, acceptance criteria) so the subagent works toward it and returns something you can act on.
 
 Write every task so a subagent that knows nothing about this session can complete it and return the output you need.
@@ -35,7 +36,7 @@ Write every task so a subagent that knows nothing about this session can complet
 - Spawn only when delegation adds clear value: independent parallel work, broad repo search, focused investigation, review, planning, bounded implementation, verification runs, browser/test passes, or log reduction.
 - Do not spawn for tiny tasks, unclear tasks, immediate blockers you must resolve before proceeding, or work whose required context cannot be summarized safely.
 - Before spawning, gather only the minimum context needed to write the task; do not start the investigation, review, plan, or implementation you intend to delegate.
-- Parallel spawns must be independent and non-overlapping. If multiple subagents may touch the same files or ownership area, serialize them.
+- Parallel spawns must have independent, non-overlapping responsibilities. Read-only reviewers may inspect the same scope when evaluating distinct concerns; serialize tasks that may modify the same files or ownership area.
 
 ## Spawn Brief
 

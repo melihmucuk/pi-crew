@@ -96,6 +96,18 @@ describe("catalog", () => {
 		assert.match(warningText(result), /override "missing" does not match/);
 	});
 
+	it("accepts the max thinking level", () => {
+		const result = discover([
+			{
+				agentsDir: "/pkg/agents",
+				files: [{ filePath: "/pkg/agents/oracle.md", content: agentMd("oracle", { thinking: "max" }) }],
+			},
+		]);
+
+		assert.equal(result.agents[0]?.thinking, "max");
+		assert.equal(result.warnings.length, 0);
+	});
+
 	it("parses definition fields and preserves explicit empty override lists through discovery", () => {
 		const result = discover(
 			[

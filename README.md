@@ -81,14 +81,14 @@ Closes an interactive subagent session owned by the current session when you no 
 Expands a bundled prompt template that orchestrates discovery and planning for implementation tasks.
 Use it to spawn scout subagents to investigate the codebase, then delegate to a planner subagent to produce a step-by-step implementation plan.
 
-Note: This prompt requires the `scout` and `planner` subagent definitions. These are included as bundled subagents and work out of the box.
+Note: This prompt requires the `scout` and `planner` subagent definitions. These are included as bundled subagents and work out of the box. Resolved overrides must keep `scout` non-interactive without `edit`/`write`, and `planner` interactive without `edit`/`write`; the workflow skips an incompatible scout and stops for an incompatible planner.
 
 #### `/pi-crew-review`
 
 Expands a bundled prompt template that orchestrates parallel code and quality reviews.
 Use it to review provided or default changed-code scope with `code-reviewer` and `quality-reviewer`, using compact task-specific briefs focused on intent, expected behavior, and relevant references, then merge both results into one report.
 
-Note: This prompt requires the `code-reviewer` and `quality-reviewer` subagent definitions. These are included as bundled subagents and work out of the box.
+Note: This prompt requires the `code-reviewer` and `quality-reviewer` subagent definitions. These are included as bundled subagents and work out of the box. Resolved overrides must keep both reviewers non-interactive without `edit`/`write`; the workflow reports and skips incompatible reviewers.
 
 ### Skills
 
@@ -102,12 +102,12 @@ pi-crew ships with six subagent definitions that cover common workflows:
 
 | Subagent             | Purpose                                                                                                                  | Tools                      | Model                       | Thinking |
 | -------------------- | ------------------------------------------------------------------------------------------------------------------------ | -------------------------- | --------------------------- | -------- |
-| **scout**            | Investigates codebase and returns structured findings. Read-only.                                                        | read, grep, find, ls, bash | openai-codex/gpt-5.5        | off      |
-| **planner**          | Produces deterministic implementation plans. Read-only. Does not write code.                                             | read, grep, find, ls, bash | openai-codex/gpt-5.5        | high     |
-| **oracle**           | Evaluates critical decisions, surfaces blind spots, and challenges assumptions. Read-only.                               | read, grep, find, ls, bash | openai-codex/gpt-5.5        | xhigh    |
-| **code-reviewer**    | Reviews scoped code for actionable bugs. Does not modify files; may run typecheck and tests.                             | read, grep, find, ls, bash | openai-codex/gpt-5.5        | high     |
-| **quality-reviewer** | Reviews scoped code for maintainability, duplication, and complexity. Read-only.                                         | read, grep, find, ls, bash | openai-codex/gpt-5.5        | high     |
-| **worker**           | Implements scoped code changes safely and verifies them.                                                                 | all                        | openai-codex/gpt-5.5        | low      |
+| **scout**            | Investigates codebase and returns structured findings. Read-only.                                                        | read, grep, find, ls, bash | openai-codex/gpt-5.6-sol    | off      |
+| **planner**          | Produces deterministic implementation plans. Read-only. Does not write code.                                             | read, grep, find, ls, bash | openai-codex/gpt-5.6-sol    | high     |
+| **oracle**           | Evaluates critical decisions, surfaces blind spots, and challenges assumptions. Read-only.                               | read, grep, find, ls, bash | openai-codex/gpt-5.6-sol    | max      |
+| **code-reviewer**    | Reviews scoped code for actionable bugs. Does not modify files; may run typecheck and tests.                             | read, grep, find, ls, bash | openai-codex/gpt-5.6-sol    | high     |
+| **quality-reviewer** | Reviews scoped code for maintainability, duplication, and complexity. Read-only.                                         | read, grep, find, ls, bash | openai-codex/gpt-5.6-sol    | high     |
+| **worker**           | Implements scoped code changes safely and verifies them.                                                                 | all                        | openai-codex/gpt-5.6-sol    | medium   |
 
 Read-only bundled subagents still keep `bash` for inspection workflows like `git` and `ast-grep`. This is an instruction-level contract, not a sandbox boundary.
 
@@ -147,11 +147,13 @@ The subagent will follow these instructions when executing tasks.
 | `name`        | yes      | Subagent identifier. No whitespace, use hyphens.                                                                     |
 | `description` | yes      | Shown in `crew_list` output.                                                                                         |
 | `model`       | no       | `provider/model-id` format (e.g., `anthropic/claude-haiku-4-5`). Falls back to session default.                      |
-| `thinking`    | no       | Thinking level: `off`, `minimal`, `low`, `medium`, `high`, `xhigh`.                                                  |
+| `thinking`    | no       | Thinking level: `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`.                                           |
 | `tools`       | no       | Comma-separated list: `read`, `bash`, `edit`, `write`, `grep`, `find`, `ls`. Omit for all, use empty value for none. |
 | `skills`      | no       | Comma-separated skill names (e.g., `ast-grep`). Omit for all, use empty value for none.                              |
 | `compaction`  | no       | Enable context compaction. Defaults to `true`.                                                                       |
 | `interactive` | no       | Keep session alive after response for multi-turn conversations. Defaults to `false`.                                 |
+
+`max` requires pi 0.80.6 or newer. On older versions, override the bundled `oracle` to use `xhigh` through `pi-crew.json`.
 
 ## Subagent Overrides via JSON
 

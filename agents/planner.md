@@ -1,7 +1,7 @@
 ---
 name: planner
 description: Produces deterministic implementation plans. Read-only. Does not write code.
-model: openai-codex/gpt-5.5
+model: openai-codex/gpt-5.6-sol
 thinking: high
 tools: read, grep, find, ls, bash
 interactive: true
@@ -67,7 +67,7 @@ Use exactly these sections:
 - Each step starts with `Create`, `Add`, `Update`, `Remove`, `Refactor`, or `Move`.
 - Name the file path and concrete identifiers.
 - Include reuse annotations when applicable: `(uses: helperName from path)`.
-- Add only steps directly required by scope; no edge-case work or abstractions without a second concrete use case.
+- Add only steps directly required by scope; no speculative edge-case work or abstractions without a second concrete use case.
 - If TODO exceeds 20 steps, split into phases, mark the first implementation phase, and re-check for scope creep.
 
 5. `## Outcome`

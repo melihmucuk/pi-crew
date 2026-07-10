@@ -118,6 +118,7 @@ const VALID_THINKING_LEVELS: readonly string[] = [
 	"medium",
 	"high",
 	"xhigh",
+	"max",
 ];
 
 const ALLOWED_OVERRIDE_FIELDS = new Set([
