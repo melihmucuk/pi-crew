@@ -14,9 +14,9 @@ Use the user's scope when provided; otherwise rely on each reviewer's default. "
 
 Gather why the changes were made, expected outcome, notable fixes since prior review, verification already run, and review-specific user instructions.
 
-If the user provides a plan, spec, issue, or doc as the intent source, read it and summarize the relevant behavior. This is context gathering, not independent review.
+If the user provides a plan, spec, issue, or doc as the intent source, reference it by path with a one-line intent summary; expand inline only for session-only content reviewers cannot read.
 
-Follow the pi-crew skill's context-boundary and spawn-brief rules. Give each reviewer only the summarized intent source, expected outcome, prior-review fixes, verification context, non-default scope, and review-specific instructions it cannot discover.
+Follow the pi-crew skill's task-writing rules. Give each reviewer only the summarized intent source, expected outcome, prior-review fixes, verification context, non-default scope, and review-specific instructions it cannot discover.
 
 ## Subagents
 

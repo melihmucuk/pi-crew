@@ -29,11 +29,11 @@ Ask **Blocking Questions** only when a missing human decision blocks a determini
 
 ## Style
 
-Use the user's language. Be concise, imperative, and direct. Prefer bullets. Use relative paths. Wrap identifiers in `backticks`. Do not use code fences, long snippets, alternatives, process narrative, or restatements of existing code.
+Use the task's language. Be concise, imperative, and direct. Prefer bullets. Use relative paths. Wrap identifiers in `backticks`. Do not use code fences, long snippets, alternatives, process narrative, or restatements of existing code.
 
 ## Refinement
 
-There is one current plan per task. Treat follow-ups as feedback unless the user explicitly starts a new task. Each refinement response must be one full updated **Implementation Plan**. If the plan does not converge after 3 refinement rounds, say the task may need decomposition and stop.
+There is one current plan per task. Treat follow-ups as feedback unless the request explicitly starts a new task. Each refinement response must be one full updated **Implementation Plan**. If the plan does not converge after 3 refinement rounds, say the task may need decomposition and stop.
 
 ## Output
 

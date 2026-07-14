@@ -1,117 +1,67 @@
 ---
 name: pi-crew
-description: "MUST read before crew tools. Delegate bounded work to async subagents; you own scope, vetting, and synthesis."
+description: Subagent orchestration for delegating work. Use when handing off tasks to subagents or before calling any crew_* tool.
 ---
 
 # Pi Crew
 
-Use this skill to coordinate subagents safely. Core rule: delegate clearly with self-contained tasks, let delegated work run without redoing it, and manage the async/interactive lifecycle explicitly.
+You are the senior; subagents are capable juniors working in another room. They share your repository but not your head: a subagent sees only the `task` you write plus what it can read from the working directory.
 
-## Your Responsibilities
+It never sees your conversation, the user's decisions, your reasoning, or other subagents' results. Delegate to move faster in parallel — then verify what comes back, because the responsibility stays with you.
 
-Keep these responsibilities local:
+**Once delegated, the work belongs to the subagent. Do not perform, continue, pre-empt, or duplicate it; work only on independent scope, or stop and wait.**
 
-- Decide whether delegation is worth it.
-- Split work into independent, non-overlapping slices.
-- Define scope, stop conditions, and acceptance criteria.
-- Vet returned evidence before relying on it.
-- Resolve conflicting results.
-- Integrate outcomes and own the final user-facing synthesis.
+## First move
 
-## Context Boundary
+- Call `crew_list`.
+- Choose from the discovered agents — names, capabilities, `interactive` flags — never assume fixed agents exist.
+- Delegate when it adds real value: independent parallel slices, broad searches, focused investigation, review, planning, bounded implementation, verification runs.
+- Skip delegation for tiny tasks, unclear tasks, or blockers you must resolve yourself before anything else can proceed.
 
-A subagent runs isolated from your session but inside the same repository:
+Gather only the minimum context needed to write the task.
 
-- It sees only the `task` you write plus what it can read from the working directory. Every subagent can read repo files, config, and persistent docs to gather context on its own; whether it can also edit files or run commands depends on the chosen subagent's tools (see `crew_list`).
-- It cannot see your session conversation, your reasoning, user decisions, or prior subagent results unless they are written to a durable file. Put any such context the subagent needs directly in the task.
-- Do not dump context the subagent can find itself (repo structure, conventions, Git state, changed-file lists). Do include session-only intent, decisions, and conclusions it cannot discover.
-- Write the task in the user's language; if that is impractical or ambiguous, state the expected response language explicitly.
-- State the exact output you need (deliverable, format, acceptance criteria) so the subagent works toward it and returns something you can act on.
+## Writing the task
 
-Write every task so a subagent that knows nothing about this session can complete it and return the output you need.
+Write every task for a competent engineer who just walked in: full intent, zero shared memory.
 
-## Protocol
+Anything decided in your session — user choices, constraints, conclusions, prior subagent findings — must be restated concisely in the task or it does not exist for the subagent.
 
-- Call `crew_list` before each new spawn decision. Choose from discovered names, descriptions, capabilities, and `interactive` flags; do not assume fixed agents exist.
-- Spawn only when delegation adds clear value: independent parallel work, broad repo search, focused investigation, review, planning, bounded implementation, verification runs, browser/test passes, or log reduction.
-- Do not spawn for tiny tasks, unclear tasks, immediate blockers you must resolve before proceeding, or work whose required context cannot be summarized safely.
-- Before spawning, gather only the minimum context needed to write the task; do not start the investigation, review, plan, or implementation you intend to delegate.
-- Parallel spawns must have independent, non-overlapping responsibilities. Read-only reviewers may inspect the same scope when evaluating distinct concerns; serialize tasks that may modify the same files or ownership area.
+- State the intent and the goal, not just the action. Include acceptance criteria and the exact deliverable you need back.
+- Carry over session-only decisions and constraints as short bullets. Skip anything the subagent can discover itself: repo structure, conventions, Git state.
+- Reference files, specs, and docs by path instead of pasting their contents; add one line of intent so the subagent knows why it is reading them.
+- Write in the user's language; if ambiguous, state the expected response language.
+- Add stop conditions where assumptions may fail or scope may creep.
 
-## Spawn Brief
+`brief` is a short label (< 80 chars) stating intent only — no criteria, paths, or secrets.
 
-Every `crew_spawn` needs:
+Never spawn tasks like "Fix this", "Investigate the bug we discussed", or "Implement the plan".
 
-- `brief`: short human-readable label for session lists, ideally under 80 chars. State intent/outcome only; no full task, criteria, long paths, secrets, or repo inventory.
-- `task`: self-contained work request with only the context this subagent needs.
+Parallel spawns must own independent, non-overlapping slices. Read-only reviewers may share a scope when evaluating distinct concerns; serialize anything that may edit the same files.
 
-Include task-specific details only when useful:
+## While they work
 
-```md
-Intent / context:
-Relevant inputs / entry points:
-Constraints / decisions:
-Deliverable / expected outcome:
-Verification / checks:
-Stop conditions:
-```
+`crew_spawn` returns immediately; the result arrives later as a steering message. Ownership of that task has transferred.
 
-Omit sections that add no task-specific value. Do not restate the subagent’s role, default scope, edit permissions, output format, obvious next steps, cwd/branch, Git status, or full changed-file lists unless they define the scope.
+- Do not perform, continue, or pre-empt it — even partially, even if you could finish it faster.
+- Do only independent work; if there is none, end your turn and wait.
+- Do not poll `crew_list` for status.
 
-Prefer short Markdown bullets for multi-part context, constraints, requirements, or acceptance criteria. Use stop conditions for assumptions that may fail, scope that may expand, repeated verification failures, or missing evidence.
+## When results return
 
-For repeated workflows, summarize the relevant facts or point to durable artifacts the subagent can read; avoid vague references like “the previous fixes.”
+Results are reports to inspect, not verdicts to forward.
 
-If the user points to a plan, spec, issue, design, or doc, read it when practical and summarize the relevant intent instead of only passing the path.
+Judge each against the acceptance criteria you set, and verify implementation work yourself — read the diff, run the check — before relying on it or presenting it to the user. Never invent or predict a result that has not arrived.
 
-### Examples
+- Conflicting results: name the conflict, compare evidence, resolve with facts or a targeted follow-up. Never average or silently pick one.
+- Incomplete result: follow up if the subagent is interactive and `waiting`; otherwise spawn fresh.
+- Errored or aborted: report the status; continue only if remaining results suffice.
 
-Good `task` (intent-first and self-contained):
+Only interactive subagents can take follow-ups; a non-interactive subagent's session ends with its result — there is no one left to answer.
 
-```md
-Intent / context:
-Password reset emails should expire after 30 minutes, but old reset links still work hours later.
+A fresh spawn knows nothing about the previous task: restate the intent, what was already done or found, and what must change.
 
-Relevant inputs / entry points:
-- Password reset request handler.
-- Token validation path used by the reset form.
-- Config or DB fields storing token expiry.
+You own the final synthesis. The user hears your conclusion, not forwarded reports.
 
-Constraints / decisions:
-- Keep the existing email template and reset URL format.
-- Do not change login or account creation.
+## Interactive lifecycle
 
-Deliverable:
-Likely root cause and the smallest safe fix direction.
-```
-
-Avoid tasks like `Fix this.`, `Investigate the bug we discussed.`, or `Implement the plan.`: they depend on session-only context the subagent cannot see.
-
-## After Spawning
-
-`crew_spawn` is non-blocking: it returns immediately without the result, the subagent runs in the background, and its result is delivered separately as a steering message. Ownership of the task transfers to the subagent.
-
-Once you spawn:
-
-- Do not perform, redo, continue, or pre-empt the delegated task in this turn, even partially, and even if you believe you could finish it faster yourself.
-- Do only work that is independent of and non-overlapping with what you delegated.
-- If you have no such independent work, end your turn and wait for the result. Do not poll; call `crew_list` again only for a new spawn decision or a requested status snapshot.
-
-## Result Handling
-
-- Wait for subagent results before using them. Never invent or predict results.
-- Treat subagent results as evidence to inspect, not verdicts to forward.
-- Evaluate each result against the task acceptance criteria.
-- If a subagent errors or aborts, report that status and continue only if the remaining results are sufficient.
-- If results conflict, do not average or silently pick one; state the conflict, compare evidence, and resolve with available facts or a targeted follow-up. If a result is incomplete or misses criteria, use a focused follow-up or new spawn only when needed.
-
-## Interactive Subagents
-
-- Use `crew_respond` only for a waiting interactive subagent when another answer is needed.
-- `crew_respond` is fire-and-forget; wait for the next steering result and do not poll.
-- Use `crew_done` only when a waiting interactive subagent is complete.
-- Do not call `crew_done` if you still need another answer.
-
-## Abort
-
-Use `crew_abort` only for active subagents owned by this session when the task is obsolete, wrong, or cancelled.
+A `waiting` interactive subagent keeps its session alive for follow-ups. Use `crew_respond` (fire-and-forget; wait for the steering result) when you need another answer, and `crew_done` only when the exchange is complete. Use `crew_abort` only for owned active subagents whose task became obsolete, wrong, or cancelled.
