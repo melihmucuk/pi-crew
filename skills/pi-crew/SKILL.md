@@ -26,6 +26,8 @@ Write every task for a competent engineer who just walked in: full intent, zero 
 
 Anything decided in your session — user choices, constraints, conclusions, prior subagent findings — must be restated concisely in the task or it does not exist for the subagent.
 
+Each subagent is alone: it does not know other subagents exist, in parallel or before it. Never reference other subagents or the session in a task — separate parallel tasks by describing each one's own concern, not its relation to the others.
+
 - State the intent and the goal, not just the action. Include acceptance criteria and the exact deliverable you need back.
 - Carry over session-only decisions and constraints as short bullets. Skip anything the subagent can discover itself: repo structure, conventions, Git state.
 - Reference files, specs, and docs by path instead of pasting their contents; add one line of intent so the subagent knows why it is reading them.
