@@ -192,11 +192,10 @@ export function renderCrewCall(theme: ToolTheme, name: string, id: string, previ
 	return box;
 }
 
-export function renderCrewResult(result: ToolResult, theme: ToolTheme): Text {
+export function renderCrewResult(result: ToolResult, theme: ToolTheme, isError: boolean): Text {
 	const text = result.content[0];
-	const details = result.details as { error?: boolean } | undefined;
 	const content = text?.type === "text" && text.text ? text.text : "(no output)";
-	return new Text(details?.error ? theme.fg("error", content) : theme.fg("success", content), 0, 0);
+	return new Text(theme.fg(isError ? "error" : "success", content), 0, 0);
 }
 
 const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];

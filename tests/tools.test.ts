@@ -109,21 +109,23 @@ describe("tools", () => {
 		assert.equal((crew.spawnCalls[0]?.[0] as { name?: string } | undefined)?.name, "scout");
 		assert.equal((crew.spawnCalls[0]?.[4] as { brief?: string } | undefined)?.brief, "inspect package");
 
-		const emptyBrief = await execute(tools, "crew_spawn", { subagent: "scout", brief: " ", task: "inspect package" }, ctx);
-		assert.equal(emptyBrief.isError, true);
-		assert.match(text(emptyBrief), /brief is required/);
-
-		const missing = await execute(tools, "crew_spawn", { subagent: "missing", brief: "missing task", task: "x" }, ctx);
-		assert.equal(missing.isError, true);
-		assert.match(text(missing), /Unknown subagent: "missing"\. Available:/);
+		await assert.rejects(
+			() => execute(tools, "crew_spawn", { subagent: "scout", brief: " ", task: "inspect package" }, ctx),
+			/brief is required/,
+		);
+		await assert.rejects(
+			() => execute(tools, "crew_spawn", { subagent: "missing", brief: "missing task", task: "x" }, ctx),
+			/Unknown subagent: "missing"\. Available:/,
+		);
 	});
 
 	it("validates abort modes and formats partial abort results", async () => {
 		const { crew, tools, ctx } = setup();
 
-		const invalid = await execute(tools, "crew_abort", { subagent_id: "a", all: true }, ctx);
-		assert.equal(invalid.isError, true);
-		assert.match(text(invalid), /Provide exactly one/);
+		await assert.rejects(
+			() => execute(tools, "crew_abort", { subagent_id: "a", all: true }, ctx),
+			/Provide exactly one/,
+		);
 
 		crew.abortOwnedResult = { abortedIds: ["a"], missingIds: ["b"], foreignIds: ["c"] };
 		const partial = await execute(tools, "crew_abort", { subagent_ids: ["a", "b", "c"] }, ctx);
@@ -133,17 +135,24 @@ describe("tools", () => {
 		assert.match(text(partial), /Belong to a different session: c/);
 		assert.deepEqual(partial.details, { ids: ["a"], missing_ids: ["b"], foreign_ids: ["c"] });
 
-		const emptyAll = await execute(tools, "crew_abort", { all: true }, ctx);
-		assert.equal(emptyAll.isError, true);
-		assert.equal(text(emptyAll), "No active subagents in the current session.");
+		await assert.rejects(
+			() => execute(tools, "crew_abort", { all: true }, ctx),
+			/No active subagents in the current session\./,
+		);
 	});
 
 	it("passes respond and done errors through and formats success", async () => {
 		const { crew, tools, ctx } = setup();
 		crew.respondError = "not waiting";
 		crew.doneError = "not found";
-		assert.equal(text(await execute(tools, "crew_respond", { subagent_id: "p", message: "hi" }, ctx)), "not waiting");
-		assert.equal(text(await execute(tools, "crew_done", { subagent_id: "p" }, ctx)), "not found");
+		await assert.rejects(
+			() => execute(tools, "crew_respond", { subagent_id: "p", message: "hi" }, ctx),
+			/not waiting/,
+		);
+		await assert.rejects(
+			() => execute(tools, "crew_done", { subagent_id: "p" }, ctx),
+			/not found/,
+		);
 
 		crew.respondError = undefined;
 		crew.doneError = undefined;

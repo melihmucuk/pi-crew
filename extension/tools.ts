@@ -23,10 +23,7 @@ import {
   sendCrewListActiveWarning,
 } from "./ui.js";
 
-export type CrewToolResult = AgentToolResult<unknown> & {
-  isError?: boolean;
-  terminate?: boolean;
-};
+export type CrewToolResult = AgentToolResult<unknown>;
 
 const PROJECT_CONFIG_DIR_NAME = piCodingAgent.CONFIG_DIR_NAME ?? ".pi";
 
@@ -42,14 +39,6 @@ function getToolContext(ctx: ExtensionContext): ToolContext {
   return {
     cwd: ctx.cwd,
     callerSessionId: ctx.sessionManager.getSessionId(),
-  };
-}
-
-function toolError(text: string): CrewToolResult {
-  return {
-    content: [{ type: "text", text }],
-    isError: true,
-    details: { error: true },
   };
 }
 
@@ -181,8 +170,8 @@ function registerActionTool<Params extends object>(
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       return action(params as Params, ctx);
     },
-    renderResult(result, _options, theme, _context) {
-      return renderCrewResult(result, theme);
+    renderResult(result, _options, theme, context) {
+      return renderCrewResult(result, theme, context.isError);
     },
   });
 }
@@ -251,7 +240,7 @@ export function registerCrewTools(
     ],
     action: (params, ctx) => {
       const brief = params.brief.trim();
-      if (!brief) return toolError("brief is required and must not be empty.");
+      if (!brief) throw new Error("brief is required and must not be empty.");
 
       const toolCtx = getToolContext(ctx);
       const { agents, warnings } = discoverAgents(toolCtx.cwd);
@@ -262,7 +251,7 @@ export function registerCrewTools(
       if (!subagent) {
         const available =
           agents.map((candidate) => candidate.name).join(", ") || "none";
-        return toolError(
+        throw new Error(
           `Unknown subagent: "${params.subagent}". Available: ${available}`,
         );
       }
@@ -329,17 +318,19 @@ export function registerCrewTools(
         Number(Boolean(params.subagent_id)) +
         Number(Boolean(params.subagent_ids?.length)) +
         Number(params.all === true);
-      if (modeCount !== 1)
-        return toolError(
+      if (modeCount !== 1) {
+        throw new Error(
           "Provide exactly one of: subagent_id, subagent_ids, or all=true.",
         );
+      }
 
       if (params.all) {
         const abortedIds = crew.abortAllOwned(callerSessionId, {
           reason: "Aborted by tool request",
         });
-        if (abortedIds.length === 0)
-          return toolError("No active subagents in the current session.");
+        if (abortedIds.length === 0) {
+          throw new Error("No active subagents in the current session.");
+        }
         return toolSuccess(
           `Aborted ${abortedIds.length} subagent(s): ${abortedIds.join(", ")}`,
           { ids: abortedIds },
@@ -354,8 +345,9 @@ export function registerCrewTools(
         reason: "Aborted by tool request",
       });
       const message = formatAbortToolMessage(result);
-      if (result.abortedIds.length === 0)
-        return toolError(message || "No subagents were aborted.");
+      if (result.abortedIds.length === 0) {
+        throw new Error(message || "No subagents were aborted.");
+      }
       return toolSuccess(
         message,
         {
@@ -399,7 +391,7 @@ export function registerCrewTools(
         params.message,
         callerSessionId,
       );
-      if (error) return toolError(error);
+      if (error) throw new Error(error);
       return toolSuccess(
         `Message sent to subagent ${params.subagent_id}. Response will be delivered as a steering message.`,
         { id: params.subagent_id, message: params.message },
@@ -429,7 +421,7 @@ export function registerCrewTools(
     action: (params, ctx) => {
       const { callerSessionId } = getToolContext(ctx);
       const { error } = crew.done(params.subagent_id, callerSessionId);
-      if (error) return toolError(error);
+      if (error) throw new Error(error);
       return toolSuccess(`Subagent ${params.subagent_id} closed.`, {
         id: params.subagent_id,
       });
