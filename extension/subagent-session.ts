@@ -1,10 +1,13 @@
+import { dirname, join } from "node:path";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { Api, AssistantMessage, Model } from "@earendil-works/pi-ai";
 import {
 	type AgentSession,
 	createAgentSession,
 	DefaultResourceLoader,
+	ModelRuntime,
 	type ModelRegistry,
+	type ProviderConfig,
 	SessionManager,
 	SettingsManager,
 } from "@earendil-works/pi-coding-agent";
@@ -65,16 +68,82 @@ function resolveTools(agentConfig: AgentConfig): SupportedToolName[] {
 	return [...(agentConfig.tools ?? SUPPORTED_TOOL_NAMES)];
 }
 
-function resolveModel(agentConfig: AgentConfig, ctx: BootstrapContext): { model: Model<Api> | undefined; warnings: string[] } {
+function resolveModel(
+	agentConfig: AgentConfig,
+	currentModel: Model<Api> | undefined,
+	modelRuntime: ModelRuntime,
+): { model: Model<Api> | undefined; warnings: string[] } {
 	const warnings: string[] = [];
-	const model = ctx.model;
-	if (!agentConfig.parsedModel) return { model, warnings };
+	if (!agentConfig.parsedModel) return { model: currentModel, warnings };
 
-	const found = ctx.modelRegistry.find(agentConfig.parsedModel.provider, agentConfig.parsedModel.modelId);
+	const found = modelRuntime.getModel(agentConfig.parsedModel.provider, agentConfig.parsedModel.modelId);
 	if (found) return { model: found, warnings };
 
 	warnings.push(`Model "${agentConfig.model}" not found, using current session model`);
-	return { model, warnings };
+	return { model: currentModel, warnings };
+}
+
+function getRequiredProviderIds(agentConfig: AgentConfig, ctx: BootstrapContext): Set<string> {
+	const providerIds = new Set<string>();
+	if (agentConfig.parsedModel) providerIds.add(agentConfig.parsedModel.provider);
+	if (ctx.model) providerIds.add(ctx.model.provider);
+	return providerIds;
+}
+
+function snapshotProviderConfig(
+	providerId: string,
+	config: ProviderConfig,
+	ownerModels: Model<Api>[],
+): ProviderConfig {
+	if (!config.refreshModels) return config;
+	return {
+		...config,
+		refreshModels: undefined,
+		models: ownerModels.filter((model) => model.provider === providerId),
+	};
+}
+
+async function transferRuntimeApiKey(
+	providerId: string,
+	ownerRegistry: ModelRegistry,
+	modelRuntime: ModelRuntime,
+): Promise<void> {
+	const apiKey = await ownerRegistry.getApiKeyForProvider(providerId);
+	if (!apiKey) {
+		throw new Error(`Configured authentication for provider "${providerId}" cannot be transferred to the subagent runtime`);
+	}
+	await modelRuntime.setRuntimeApiKey(providerId, apiKey);
+}
+
+async function createChildModelRuntime(agentConfig: AgentConfig, ctx: BootstrapContext): Promise<ModelRuntime> {
+	const modelRuntime = await ModelRuntime.create({
+		authPath: join(ctx.agentDir, "auth.json"),
+		modelsPath: join(ctx.agentDir, "models.json"),
+		allowModelNetwork: false,
+	});
+	const requiredProviderIds = getRequiredProviderIds(agentConfig, ctx);
+
+	for (const providerId of requiredProviderIds) {
+		const ownerAuth = ctx.modelRegistry.getProviderAuthStatus(providerId);
+		if (ownerAuth.configured && ownerAuth.source === "runtime") {
+			await transferRuntimeApiKey(providerId, ctx.modelRegistry, modelRuntime);
+		}
+	}
+
+	const ownerModels = ctx.modelRegistry.getAll();
+	for (const providerId of ctx.modelRegistry.getRegisteredProviderIds()) {
+		const config = ctx.modelRegistry.getRegisteredProviderConfig(providerId);
+		if (config) modelRuntime.registerProvider(providerId, snapshotProviderConfig(providerId, config, ownerModels));
+	}
+
+	for (const providerId of requiredProviderIds) {
+		const ownerAuth = ctx.modelRegistry.getProviderAuthStatus(providerId);
+		if (ownerAuth.configured && !await modelRuntime.checkAuth(providerId)) {
+			await transferRuntimeApiKey(providerId, ctx.modelRegistry, modelRuntime);
+		}
+	}
+
+	return modelRuntime;
 }
 
 function getSkillWarnings(agentConfig: AgentConfig, resourceLoader: DefaultResourceLoader): string[] {
@@ -94,9 +163,8 @@ async function bootstrapSession(opts: BootstrapOptions): Promise<BootstrapResult
 	const warnings: string[] = [];
 	const { agentConfig, cwd, ctx, extensionResolvedPath } = opts;
 
-	const authStorage = ctx.modelRegistry.authStorage;
-	const modelRegistry = ctx.modelRegistry;
-	const { model, warnings: modelWarnings } = resolveModel(agentConfig, ctx);
+	const modelRuntime = await createChildModelRuntime(agentConfig, ctx);
+	const { model, warnings: modelWarnings } = resolveModel(agentConfig, ctx.model, modelRuntime);
 	warnings.push(...modelWarnings);
 	const tools = resolveTools(agentConfig);
 
@@ -122,7 +190,8 @@ async function bootstrapSession(opts: BootstrapOptions): Promise<BootstrapResult
 		compaction: { enabled: agentConfig.compaction ?? true },
 	});
 
-	const sessionManager = SessionManager.create(cwd);
+	const sessionDir = ctx.parentSessionFile ? dirname(ctx.parentSessionFile) : join(ctx.agentDir, "sessions");
+	const sessionManager = SessionManager.create(cwd, sessionDir);
 	sessionManager.newSession({ parentSession: ctx.parentSessionFile });
 
 	const result = await createAgentSession({
@@ -134,8 +203,7 @@ async function bootstrapSession(opts: BootstrapOptions): Promise<BootstrapResult
 		resourceLoader,
 		sessionManager,
 		settingsManager,
-		authStorage,
-		modelRegistry,
+		modelRuntime,
 	});
 
 	return { session: result.session, warnings };

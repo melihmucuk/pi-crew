@@ -42,11 +42,11 @@ Parallel spawns must own independent, non-overlapping slices. Read-only reviewer
 
 ## While they work
 
-`crew_spawn` returns immediately; the result arrives later as a steering message. Ownership of that task has transferred.
+`crew_spawn` returns immediately; ownership of the delegated task has transferred.
 
-- Do not perform, continue, or pre-empt it — even partially, even if you could finish it faster.
-- Do only independent work; if there is none, end your turn and wait.
-- Do not poll `crew_list` for status.
+- Do not perform, continue, pre-empt, or duplicate that task.
+- Work only on independent scope.
+- If none remains, end the turn. Never wait with `sleep`, timers, loops, repeated commands, or `crew_list`; the steering result will trigger a new turn when idle.
 
 ## When results return
 

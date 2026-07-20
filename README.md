@@ -20,7 +20,7 @@ From git:
 pi install git:github.com/melihmucuk/pi-crew
 ```
 
-This installs the extension and all bundled resources. Subagent definitions are automatically discovered and ready to use without any extra setup.
+This installs the extension and all bundled resources. Subagent definitions are automatically discovered and ready to use without any extra setup. pi-crew requires Pi 0.80.10 or newer.
 
 ## How It Works
 
@@ -153,7 +153,7 @@ The subagent will follow these instructions when executing tasks.
 | `compaction`  | no       | Enable context compaction. Defaults to `true`.                                                                       |
 | `interactive` | no       | Keep session alive after response for multi-turn conversations. Defaults to `false`.                                 |
 
-`max` requires pi 0.80.6 or newer. On older versions, override the bundled `oracle` to use `xhigh` through `pi-crew.json`.
+Subagents load persisted credentials and custom models from the same Pi agent directory as the owner. They also inherit extension-registered provider configuration, the owner's current dynamic model catalog snapshot, and runtime API-key overrides for the configured and fallback models through Pi's public model APIs. An owner credential that Pi cannot expose or reload causes an explicit spawn error rather than silent auth loss.
 
 ## Subagent Overrides via JSON
 

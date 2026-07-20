@@ -190,7 +190,7 @@ export function registerCrewTools(
     parameters: Type.Object({}),
     promptSnippet: "List available subagents and active subagents.",
     promptGuidelines: [
-      "crew_list: Use for subagent discovery or status snapshot; never poll for completion.",
+      "crew_list: Use for discovery or a status snapshot; never poll for completion.",
     ],
     async execute(_toolCallId, _params, _signal, _onUpdate, ctx) {
       const toolCtx = getToolContext(ctx);
@@ -237,6 +237,8 @@ export function registerCrewTools(
     promptSnippet: "Spawn a discovered subagent for delegated work.",
     promptGuidelines: [
       "crew_spawn: Keep brief short; put necessary context and criteria in task.",
+      "crew_spawn: Do not duplicate delegated work; continue only with independent scope.",
+      "crew_spawn: If none remains, end the turn—never sleep or poll; results arrive automatically.",
     ],
     action: (params, ctx) => {
       const brief = params.brief.trim();
@@ -272,7 +274,7 @@ export function registerCrewTools(
         extensionDir,
       );
       return toolSuccess(
-        `Subagent '${subagent.name}' spawned as ${id}. Result will be delivered as a steering message when done.`,
+        `Subagent '${subagent.name}' spawned as ${id}. Do independent work or end your turn—never duplicate, sleep, or poll. Results arrive automatically.`,
         { id, agentName: subagent.name, brief, task: params.task },
       );
     },
