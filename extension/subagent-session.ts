@@ -13,7 +13,8 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import type { AgentConfig } from "./catalog.js";
 import { SUPPORTED_TOOL_NAMES, type SupportedToolName } from "./catalog.js";
-import type { SubagentState } from "./crew.js";
+import type { SubagentState, SubagentToolActivity } from "./crew.js";
+import { summarizeToolTarget } from "./tool-activity.js";
 import type { SubagentStatus } from "./ui.js";
 
 export interface BootstrapContext {
@@ -51,6 +52,8 @@ interface StartOptions {
 export interface SubagentRunnerCallbacks {
 	isCurrent: (state: SubagentState) => boolean;
 	onProgress: (ownerSessionId: string) => void;
+	onToolStart: (state: SubagentState, tool: Omit<SubagentToolActivity, "status">) => void;
+	onToolEnd: (state: SubagentState, toolCallId: string, isError: boolean) => void;
 	onSettled: (
 		state: SubagentState,
 		status: Extract<SubagentStatus, "done" | "waiting" | "error" | "aborted">,
@@ -112,7 +115,7 @@ async function transferRuntimeApiKey(
 	if (!apiKey) {
 		throw new Error(`Configured authentication for provider "${providerId}" cannot be transferred to the subagent runtime`);
 	}
-	await modelRuntime.setRuntimeApiKey(providerId, apiKey);
+	await modelRuntime.setRuntimeApiKey(providerId, apiKey, { allowNetwork: false });
 }
 
 async function createChildModelRuntime(agentConfig: AgentConfig, ctx: BootstrapContext): Promise<ModelRuntime> {
@@ -122,18 +125,24 @@ async function createChildModelRuntime(agentConfig: AgentConfig, ctx: BootstrapC
 		allowModelNetwork: false,
 	});
 	const requiredProviderIds = getRequiredProviderIds(agentConfig, ctx);
+	const ownerModels = ctx.modelRegistry.getAll();
+
+	for (const providerId of ctx.modelRegistry.getRegisteredProviderIds()) {
+		const nativeProvider = ctx.modelRegistry.getRegisteredNativeProvider(providerId);
+		if (nativeProvider) {
+			modelRuntime.registerNativeProvider(nativeProvider);
+			continue;
+		}
+
+		const config = ctx.modelRegistry.getRegisteredProviderConfig(providerId);
+		if (config) modelRuntime.registerProvider(providerId, snapshotProviderConfig(providerId, config, ownerModels));
+	}
 
 	for (const providerId of requiredProviderIds) {
 		const ownerAuth = ctx.modelRegistry.getProviderAuthStatus(providerId);
 		if (ownerAuth.configured && ownerAuth.source === "runtime") {
 			await transferRuntimeApiKey(providerId, ctx.modelRegistry, modelRuntime);
 		}
-	}
-
-	const ownerModels = ctx.modelRegistry.getAll();
-	for (const providerId of ctx.modelRegistry.getRegisteredProviderIds()) {
-		const config = ctx.modelRegistry.getRegisteredProviderConfig(providerId);
-		if (config) modelRuntime.registerProvider(providerId, snapshotProviderConfig(providerId, config, ownerModels));
 	}
 
 	for (const providerId of requiredProviderIds) {
@@ -269,22 +278,39 @@ export class SubagentSessionRunner implements SubagentRunner {
 		state.session?.abort().catch(() => {});
 	}
 
+	private updateUsage(state: SubagentState, session: AgentSession): void {
+		const stats = session.getSessionStats();
+		state.inputTokens = stats.tokens.input;
+		state.outputTokens = stats.tokens.output;
+		state.cost = stats.cost;
+	}
+
 	private attachSessionListeners(state: SubagentState, session: AgentSession): void {
 		state.unsubscribe = session.subscribe((event) => {
+			if (event.type === "tool_execution_start") {
+				this.callbacks.onToolStart(state, {
+					id: event.toolCallId,
+					name: event.toolName,
+					target: summarizeToolTarget(event.toolName, event.args),
+				});
+				return;
+			}
+
+			if (event.type === "tool_execution_end") {
+				this.callbacks.onToolEnd(state, event.toolCallId, event.isError);
+				return;
+			}
+
 			if (event.type === "turn_end") {
-				state.turns++;
 				const msg = event.message;
-				if (msg.role === "assistant") {
-					const assistantMsg = msg as AssistantMessage;
-					state.contextTokens = assistantMsg.usage.totalTokens;
-					state.model = assistantMsg.model;
-				}
+				if (msg.role === "assistant") state.model = (msg as AssistantMessage).model;
+				this.updateUsage(state, session);
 				this.callbacks.onProgress(state.ownerSessionId);
 				return;
 			}
 
-			if (event.type === "compaction_end" && event.result?.estimatedTokensAfter !== undefined) {
-				state.contextTokens = event.result.estimatedTokensAfter;
+			if (event.type === "compaction_end") {
+				this.updateUsage(state, session);
 				this.callbacks.onProgress(state.ownerSessionId);
 			}
 		});
@@ -296,6 +322,7 @@ export class SubagentSessionRunner implements SubagentRunner {
 			return false;
 		}
 		state.session = session;
+		state.thinking = session.thinkingLevel;
 		session.setSessionName(formatSubagentSessionName(state));
 		return true;
 	}

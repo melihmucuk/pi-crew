@@ -48,6 +48,18 @@ class FakeRunner implements SubagentRunner {
 		this.aborted.push(state.id);
 	}
 
+	startTool(id: string, toolCallId: string, name: string, target: string): void {
+		const state = this.states.find((candidate) => candidate.id === id);
+		assert.ok(state, `missing state ${id}`);
+		this.callbacks.onToolStart(state, { id: toolCallId, name, target });
+	}
+
+	endTool(id: string, toolCallId: string, isError = false): void {
+		const state = this.states.find((candidate) => candidate.id === id);
+		assert.ok(state, `missing state ${id}`);
+		this.callbacks.onToolEnd(state, toolCallId, isError);
+	}
+
 	settle(id: string, status: Exclude<SubagentStatus, "running">, outcome: { result?: string; error?: string }): void {
 		const state = this.states.find((candidate) => candidate.id === id);
 		assert.ok(state, `missing state ${id}`);
@@ -117,6 +129,28 @@ describe("CrewRuntime", () => {
 		assert.match(sent[0]?.message.content ?? "", /result body/);
 		assert.deepEqual(sent[0]?.options, { triggerTurn: true });
 		assert.deepEqual(crew.getActiveSummariesForOwner("owner-1"), []);
+	});
+
+	it("counts all tool calls while retaining only the latest ten", () => {
+		const { crew, runner, binding } = setup();
+		crew.activateSession(binding);
+		const id = spawn(crew);
+
+		for (let index = 1; index <= 12; index++) {
+			runner.startTool(id, `tool-${index}`, index === 12 ? "bash" : "read", `target-${index}`);
+		}
+		runner.endTool(id, "tool-11");
+		runner.endTool(id, "tool-12", true);
+
+		const summary = crew.getActiveSummariesForOwner("owner-1")[0];
+		assert.equal(summary?.brief, "task brief");
+		assert.equal(summary?.thinking, undefined);
+		assert.equal(summary?.toolCallCount, 12);
+		assert.equal(summary?.toolActivities.length, 10);
+		assert.deepEqual(summary?.toolActivities.slice(-2), [
+			{ id: "tool-11", name: "read", target: "target-11", status: "done" },
+			{ id: "tool-12", name: "bash", target: "target-12", status: "error" },
+		]);
 	});
 
 	it("keeps interactive jobs waiting, accepts respond, and closes with done", () => {

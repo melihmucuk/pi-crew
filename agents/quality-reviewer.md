@@ -2,7 +2,7 @@
 name: quality-reviewer
 description: Reviews scoped code for maintainability, duplication, and complexity. Read-only.
 model: openai-codex/gpt-5.6-sol
-thinking: high
+thinking: medium
 tools: read, grep, find, ls, bash
 ---
 

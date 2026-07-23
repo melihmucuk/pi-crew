@@ -23,6 +23,15 @@ interface PendingMessage {
 	queuedAt: number;
 }
 
+export type SubagentToolStatus = "running" | "done" | "error";
+
+export interface SubagentToolActivity {
+	id: string;
+	name: string;
+	target: string;
+	status: SubagentToolStatus;
+}
+
 export interface SubagentState {
 	id: string;
 	agentConfig: AgentConfig;
@@ -31,9 +40,13 @@ export interface SubagentState {
 	status: SubagentStatus;
 	ownerSessionId: string;
 	session: AgentSession | null;
-	turns: number;
-	contextTokens: number;
+	inputTokens: number;
+	outputTokens: number;
+	cost: number;
 	model: string | undefined;
+	thinking: string | undefined;
+	toolCallCount: number;
+	toolActivities: SubagentToolActivity[];
 	error?: string;
 	result?: string;
 	unsubscribe?: () => void;
@@ -42,10 +55,15 @@ export interface SubagentState {
 export interface ActiveAgentSummary {
 	id: string;
 	agentName: string;
+	brief?: string;
 	status: SubagentStatus;
-	turns: number;
-	contextTokens: number;
+	inputTokens: number;
+	outputTokens: number;
+	cost: number;
 	model: string | undefined;
+	thinking: string | undefined;
+	toolCallCount: number;
+	toolActivities: SubagentToolActivity[];
 }
 
 export interface AbortOwnedResult {
@@ -70,6 +88,7 @@ export interface SpawnContext {
 type SettledSubagentStatus = Extract<SubagentStatus, "done" | "waiting" | "error" | "aborted">;
 
 const PENDING_MESSAGE_TTL_MS = 86_400_000;
+const RETAINED_TOOL_ACTIVITY_LIMIT = 10;
 
 function toBootstrapContext(ctx: SpawnContext): BootstrapContext {
 	return {
@@ -96,10 +115,15 @@ function buildActiveAgentSummary(state: SubagentState): ActiveAgentSummary {
 	return {
 		id: state.id,
 		agentName: state.agentConfig.name,
+		brief: state.brief,
 		status: state.status,
-		turns: state.turns,
-		contextTokens: state.contextTokens,
+		inputTokens: state.inputTokens,
+		outputTokens: state.outputTokens,
+		cost: state.cost,
 		model: state.model,
+		thinking: state.thinking,
+		toolCallCount: state.toolCallCount,
+		toolActivities: state.toolActivities.map((tool) => ({ ...tool })),
 	};
 }
 
@@ -126,6 +150,8 @@ export class CrewRuntime {
 		const callbacks: SubagentRunnerCallbacks = {
 			isCurrent: (state) => this.agents.get(state.id) === state,
 			onProgress: (ownerSessionId) => this.refreshWidgetFor(ownerSessionId),
+			onToolStart: (state, tool) => this.startTool(state, tool),
+			onToolEnd: (state, toolCallId, isError) => this.endTool(state, toolCallId, isError),
 			onSettled: (state, status, outcome) => this.settleAgent(state, status, outcome),
 		};
 		this.runner = opts.createRunner?.(callbacks) ?? new SubagentSessionRunner(callbacks);
@@ -238,9 +264,13 @@ export class CrewRuntime {
 			status: "running",
 			ownerSessionId,
 			session: null,
-			turns: 0,
-			contextTokens: 0,
+			inputTokens: 0,
+			outputTokens: 0,
+			cost: 0,
 			model: undefined,
+			thinking: undefined,
+			toolCallCount: 0,
+			toolActivities: [],
 		};
 		this.agents.set(id, state);
 		return state;
@@ -248,6 +278,26 @@ export class CrewRuntime {
 
 	private refreshWidgetFor(sessionId: string): void {
 		this.refreshCallbacks.get(sessionId)?.();
+	}
+
+	private startTool(state: SubagentState, tool: Omit<SubagentToolActivity, "status">): void {
+		if (this.agents.get(state.id) !== state) return;
+		const activity: SubagentToolActivity = { ...tool, status: "running" };
+		const existing = state.toolActivities.some((candidate) => candidate.id === tool.id);
+		if (!existing) state.toolCallCount++;
+		state.toolActivities = [
+			...state.toolActivities.filter((candidate) => candidate.id !== tool.id),
+			activity,
+		].slice(-RETAINED_TOOL_ACTIVITY_LIMIT);
+		this.refreshWidgetFor(state.ownerSessionId);
+	}
+
+	private endTool(state: SubagentState, toolCallId: string, isError: boolean): void {
+		if (this.agents.get(state.id) !== state) return;
+		const tool = state.toolActivities.find((activity) => activity.id === toolCallId);
+		if (!tool) return;
+		tool.status = isError ? "error" : "done";
+		this.refreshWidgetFor(state.ownerSessionId);
 	}
 
 	private settleAgent(state: SubagentState, nextStatus: SettledSubagentStatus, opts: { result?: string; error?: string }): void {

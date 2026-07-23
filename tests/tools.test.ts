@@ -88,7 +88,7 @@ async function execute(tools: Map<string, any>, name: string, params: object, ct
 describe("tools", () => {
 	it("lists available and active subagents and warns when active jobs exist", async () => {
 		const { crew, tools, ctx, sent } = setup();
-		crew.active = [{ id: "planner-1", agentName: "planner", status: "waiting", turns: 2, contextTokens: 1200, model: "model-x" }];
+		crew.active = [{ id: "planner-1", agentName: "planner", status: "waiting", inputTokens: 1_000, outputTokens: 200, cost: 0.01, model: "model-x", thinking: "medium", toolCallCount: 0, toolActivities: [] }];
 
 		const response = await execute(tools, "crew_list", {}, ctx);
 		await Promise.resolve();

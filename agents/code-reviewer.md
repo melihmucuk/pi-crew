@@ -2,7 +2,7 @@
 name: code-reviewer
 description: Reviews scoped code for actionable bugs. Does not modify files; may run typecheck and tests.
 model: openai-codex/gpt-5.6-sol
-thinking: high
+thinking: medium
 tools: read, grep, find, ls, bash
 ---
 

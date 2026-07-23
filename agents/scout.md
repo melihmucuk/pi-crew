@@ -1,8 +1,8 @@
 ---
 name: scout
 description: Investigates codebase and returns structured findings. Read-only.
-model: openai-codex/gpt-5.6-sol
-thinking: off
+model: openai-codex/gpt-5.6-luna
+thinking: high
 tools: read, grep, find, ls, bash
 ---
 

@@ -3,7 +3,7 @@ import { fileURLToPath } from "node:url";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { crewRuntime, type CrewRuntime } from "./crew.js";
 import { registerCrewTools } from "./tools.js";
-import { registerCrewMessageRenderers, updateWidget } from "./ui.js";
+import { CREW_WIDGET_TOGGLE_SHORTCUT, registerCrewMessageRenderers, updateWidget } from "./ui.js";
 
 const extensionDir = dirname(fileURLToPath(import.meta.url));
 
@@ -41,11 +41,12 @@ function setupProcessHooks(crew: CrewRuntime, processHooks: ProcessHooks, setupK
 export function registerPiCrewExtension(pi: ExtensionAPI, options: RegisterPiCrewExtensionOptions = {}) {
 	const crew = options.crew ?? crewRuntime;
 	let currentCtx: ExtensionContext | undefined;
+	let widgetExpanded = false;
 
 	setupProcessHooks(crew, options.processHooks ?? process, options.processHooksSetupKey ?? processHooksSetupKey);
 
 	const refreshWidget = () => {
-		if (currentCtx) updateWidget(currentCtx, crew);
+		if (currentCtx) updateWidget(currentCtx, crew, widgetExpanded);
 	};
 
 	const activateSession = (ctx: ExtensionContext) => {
@@ -71,6 +72,14 @@ export function registerPiCrewExtension(pi: ExtensionAPI, options: RegisterPiCre
 		if (event.reason === "quit") {
 			crew.abortAll();
 		}
+	});
+
+	pi.registerShortcut(CREW_WIDGET_TOGGLE_SHORTCUT, {
+		description: "Toggle latest three or ten subagent tool calls",
+		handler: (ctx) => {
+			widgetExpanded = !widgetExpanded;
+			updateWidget(ctx, crew, widgetExpanded);
+		},
 	});
 
 	registerCrewTools(pi, crew, options.extensionDir ?? extensionDir);

@@ -67,6 +67,7 @@ class FakeProcessHooks {
 
 function setup(setupKey = Symbol("pi-crew-test-hooks")) {
 	const handlers: RegisteredHandlers = {};
+	const shortcuts: Array<{ key: string; description: string }> = [];
 	const crew = new FakeCrew();
 	const processHooks = new FakeProcessHooks();
 	const pi = {
@@ -75,6 +76,9 @@ function setup(setupKey = Symbol("pi-crew-test-hooks")) {
 		},
 		registerTool() {},
 		registerMessageRenderer() {},
+		registerShortcut(key: string, options: { description: string }) {
+			shortcuts.push({ key, description: options.description });
+		},
 		sendMessage() {},
 	};
 
@@ -85,7 +89,7 @@ function setup(setupKey = Symbol("pi-crew-test-hooks")) {
 		extensionDir: "/pkg/extension",
 	});
 
-	return { crew, handlers, pi, processHooks };
+	return { crew, handlers, pi, processHooks, shortcuts };
 }
 
 function context(sessionId = "owner-1", sessionFile?: string): ExtensionContextStub {
@@ -105,6 +109,15 @@ function context(sessionId = "owner-1", sessionFile?: string): ExtensionContextS
 }
 
 describe("extension lifecycle wiring", () => {
+	it("registers an unused Pi shortcut for expanding widget tool calls", () => {
+		const { shortcuts } = setup();
+
+		assert.deepEqual(shortcuts, [{
+			key: "ctrl+shift+e",
+			description: "Toggle latest three or ten subagent tool calls",
+		}]);
+	});
+
 	it("activates sessions with getSessionId ownership", () => {
 		const { crew, handlers } = setup();
 

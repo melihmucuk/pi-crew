@@ -66,7 +66,7 @@ describe("package metadata", () => {
 			"@earendil-works/pi-coding-agent",
 			"@earendil-works/pi-tui",
 		]) {
-			assert.equal(packageJson.peerDependencies?.[packageName], ">=0.80.10");
+			assert.equal(packageJson.peerDependencies?.[packageName], ">=0.81.1");
 		}
 	});
 

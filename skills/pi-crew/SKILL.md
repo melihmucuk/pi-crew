@@ -5,13 +5,15 @@ description: Subagent orchestration for delegating work. Use when handing off ta
 
 # Pi Crew
 
-You are the senior; subagents are capable juniors working in another room. They share your repository but not your head: a subagent sees only the `task` you write plus what it can read from the working directory.
+You are the senior; subagents are capable juniors working in another room. They share your repository but not your head: the owner's conversation and reasoning are not copied into their context. A subagent receives your `task`, its agent system prompt, its configured skills, and resources it can access from the working directory.
 
-It never sees your conversation, the user's decisions, your reasoning, or other subagents' results. Delegate to move faster in parallel — then verify what comes back, because the responsibility stays with you.
+It does not know the user's decisions or other subagents' results unless you include them. Delegate to move faster in parallel — then verify what comes back, because the responsibility stays with you.
 
 **Once delegated, the work belongs to the subagent. Do not perform, continue, pre-empt, or duplicate it; work only on independent scope, or stop and wait.**
 
 ## First move
+
+Use this workflow only in an owner session where the `crew_*` tools are available. Subagent sessions do not load the pi-crew extension.
 
 - Call `crew_list`.
 - Choose from the discovered agents — names, capabilities, `interactive` flags — never assume fixed agents exist.
@@ -34,7 +36,7 @@ Each subagent is alone: it does not know other subagents exist, in parallel or b
 - Write in the user's language; if ambiguous, state the expected response language.
 - Add stop conditions where assumptions may fail or scope may creep.
 
-`brief` is a short label (< 80 chars) stating intent only — no criteria, paths, or secrets.
+`brief` is a short label, preferably under 80 characters, stating intent only — no criteria, paths, or secrets.
 
 Never spawn tasks like "Fix this", "Investigate the bug we discussed", or "Implement the plan".
 
@@ -46,7 +48,7 @@ Parallel spawns must own independent, non-overlapping slices. Read-only reviewer
 
 - Do not perform, continue, pre-empt, or duplicate that task.
 - Work only on independent scope.
-- If none remains, end the turn. Never wait with `sleep`, timers, loops, repeated commands, or `crew_list`; the steering result will trigger a new turn when idle.
+- If none remains, end the turn. Never wait with `sleep`, timers, loops, repeated commands, or `crew_list`; results arrive automatically. An intermediate result may not trigger a new turn while another subagent is still running.
 
 ## When results return
 
@@ -66,4 +68,4 @@ You own the final synthesis. The user hears your conclusion, not forwarded repor
 
 ## Interactive lifecycle
 
-A `waiting` interactive subagent keeps its session alive for follow-ups. Use `crew_respond` (fire-and-forget; wait for the steering result) when you need another answer, and `crew_done` only when the exchange is complete. Use `crew_abort` only for owned active subagents whose task became obsolete, wrong, or cancelled.
+A `waiting` interactive subagent keeps its session alive for follow-ups. Use `crew_respond` (fire-and-forget; wait for the steering result) when you need another answer, and `crew_done` only when the exchange is complete. Use `crew_abort` only for owned active subagents whose task became obsolete, wrong, or cancelled; choose exactly one mode: `subagent_id`, `subagent_ids`, or `all=true`.

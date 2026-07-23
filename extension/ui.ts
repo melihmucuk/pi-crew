@@ -3,10 +3,13 @@ import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import {
 	type ExtensionAPI,
 	type ExtensionContext,
+	type Theme,
 	getMarkdownTheme,
+	rawKeyHint,
 } from "@earendil-works/pi-coding-agent";
-import { Box, Markdown, Text } from "@earendil-works/pi-tui";
+import { Box, type Component, Markdown, Text, truncateToWidth } from "@earendil-works/pi-tui";
 import type { ActiveAgentSummary, CrewRuntime } from "./crew.js";
+import { sanitizeInline } from "./tool-activity.js";
 
 export type SendMessageFn = ExtensionAPI["sendMessage"];
 type Message = Parameters<SendMessageFn>[0];
@@ -198,6 +201,9 @@ export function renderCrewResult(result: ToolResult, theme: ToolTheme, isError: 
 	return new Text(theme.fg(isError ? "error" : "success", content), 0, 0);
 }
 
+export const CREW_WIDGET_TOGGLE_SHORTCUT = "ctrl+shift+e";
+const COMPACT_TOOL_CALL_LIMIT = 3;
+const EXPANDED_TOOL_CALL_LIMIT = 10;
 const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 const SPINNER_INTERVAL_MS = 80;
 
@@ -207,19 +213,81 @@ function formatTokens(tokens: number): string {
 	return String(tokens);
 }
 
-function buildWidgetLine(agent: ActiveAgentSummary, frame: string): string {
-	const model = agent.model ?? "…";
-	const icon = agent.status === "waiting" ? "⏳" : frame;
-	return `${icon} ${agent.id} (${model}) · turn ${agent.turns} · ${formatTokens(agent.contextTokens)} ctx`;
+function formatCost(cost: number): string {
+	if (cost === 0 || cost >= 0.01) return `$${cost.toFixed(2)}`;
+	return `$${cost.toFixed(4)}`;
+}
+
+export class CrewWidgetComponent implements Component {
+	private agents: ActiveAgentSummary[] = [];
+	private expanded = false;
+	private frame = "";
+
+	constructor(
+		private readonly theme: Theme,
+		private readonly formatKeyHint: (key: string, description: string) => string = rawKeyHint,
+	) {}
+
+	setState(agents: ActiveAgentSummary[], frame: string, expanded: boolean): void {
+		this.agents = agents;
+		this.frame = frame;
+		this.expanded = expanded;
+	}
+
+	render(width: number): string[] {
+		if (width <= 0) return [];
+		const lines: string[] = [];
+		for (const [index, agent] of this.agents.entries()) {
+			if (index > 0) lines.push("");
+			const model = sanitizeInline(agent.model ?? "…");
+			const agentId = sanitizeInline(agent.id);
+			const brief = sanitizeInline(agent.brief ?? "") || sanitizeInline(agent.agentName);
+			const icon = agent.status === "waiting" ? "⏳" : this.frame;
+			const activities = agent.toolActivities;
+			const toggleAction = this.expanded ? "collapse" : "expand";
+			const header = this.theme.fg("warning", icon) + " "
+				+ this.theme.fg("toolTitle", this.theme.bold(agentId))
+				+ this.theme.fg("muted", ` - ${brief}`)
+				+ this.theme.fg("dim", " | ")
+				+ this.formatKeyHint(CREW_WIDGET_TOGGLE_SHORTCUT, `to ${toggleAction}`);
+			const metadata = this.theme.fg(
+				"muted",
+				`  ${agent.toolCallCount} tool calls · ↑ ${formatTokens(agent.inputTokens)} · ↓ ${formatTokens(agent.outputTokens)} · ${formatCost(agent.cost)} · ${model} ${agent.thinking ?? "…"}`,
+			);
+			lines.push(truncateToWidth(header, width, "…"));
+			lines.push(truncateToWidth(metadata, width, "…"));
+			if (activities.length > 0) lines.push(truncateToWidth(this.theme.fg("dim", "  ---"), width, "…"));
+			const limit = this.expanded ? EXPANDED_TOOL_CALL_LIMIT : COMPACT_TOOL_CALL_LIMIT;
+			const visibleActivities = activities.slice(-limit);
+			if (this.expanded && agent.toolCallCount > visibleActivities.length) {
+				lines.push(truncateToWidth(
+					this.theme.fg("dim", `  … ${agent.toolCallCount - visibleActivities.length} older tool calls`),
+					width,
+					"…",
+				));
+			}
+			for (const tool of visibleActivities) {
+				const color = tool.status === "error" ? "error" : tool.status === "done" ? "success" : "muted";
+				const target = sanitizeInline(tool.target);
+				const action = "  " + this.theme.fg(color, sanitizeInline(tool.name))
+					+ (target ? this.theme.fg("muted", `  ${target}`) : "");
+				lines.push(truncateToWidth(action, width, "…"));
+			}
+		}
+		return lines;
+	}
+
+	invalidate(): void {}
 }
 
 interface WidgetState {
 	ctx: ExtensionContext;
-	text: Text;
+	component: CrewWidgetComponent;
 	// biome-ignore lint: TUI type from factory param
 	tui: any;
 	timer: ReturnType<typeof setInterval>;
 	frameIndex: number;
+	expanded: boolean;
 }
 
 let widget: WidgetState | undefined;
@@ -242,11 +310,11 @@ function hasRunningAgent(agents: ActiveAgentSummary[]): boolean {
 
 function syncWidgetText(state: WidgetState, agents: ActiveAgentSummary[]): void {
 	const frame = SPINNER_FRAMES[state.frameIndex % SPINNER_FRAMES.length];
-	state.text.setText(agents.map((agent) => buildWidgetLine(agent, frame)).join("\n"));
+	state.component.setState(agents, frame, state.expanded);
 	state.tui.requestRender();
 }
 
-export function updateWidget(ctx: ExtensionContext, crew: CrewRuntime): void {
+export function updateWidget(ctx: ExtensionContext, crew: CrewRuntime, expanded = false): void {
 	if (ctx.mode !== "tui") {
 		clearWidget();
 		return;
@@ -261,17 +329,19 @@ export function updateWidget(ctx: ExtensionContext, crew: CrewRuntime): void {
 
 	if (widget && widget.ctx !== ctx) clearWidget();
 	if (widget) {
+		widget.expanded = expanded;
 		syncWidgetText(widget, running);
 		return;
 	}
 
-	ctx.ui.setWidget("crew-status", (tui, _theme) => {
-		const text = new Text("", 1, 0);
+	ctx.ui.setWidget("crew-status", (tui, theme) => {
+		const component = new CrewWidgetComponent(theme);
 		const state: WidgetState = {
 			ctx,
-			text,
+			component,
 			tui,
 			frameIndex: 0,
+			expanded,
 			timer: setInterval(() => {
 				const agents = crew.getActiveSummariesForOwner(ownerSessionId);
 				if (agents.length === 0) {
@@ -283,11 +353,12 @@ export function updateWidget(ctx: ExtensionContext, crew: CrewRuntime): void {
 				syncWidgetText(state, agents);
 			}, SPINNER_INTERVAL_MS),
 		};
+		state.timer.unref();
 
 		widget = state;
 		syncWidgetText(state, running);
 
-		return Object.assign(text, {
+		return Object.assign(component, {
 			dispose() {
 				disposeWidget(state);
 			},
