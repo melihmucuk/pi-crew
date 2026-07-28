@@ -2,6 +2,9 @@
 
 Non-blocking subagent orchestration for [pi](https://pi.dev). Run isolated subagents in parallel while your current session stays interactive. Updates return automatically to the session that started them.
 
+> [!WARNING]
+> **Maintenance status:** pi-crew is no longer actively maintained. The package remains available as-is, but bug fixes, compatibility updates, and support are not guaranteed. Future Pi releases may break it. Feel free to fork the project if you want to continue its development.
+
 ## Preview
 
 ![pi-crew running parallel subagents](assets/preview.png)
