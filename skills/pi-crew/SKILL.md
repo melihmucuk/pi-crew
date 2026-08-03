@@ -5,67 +5,42 @@ description: Subagent orchestration for delegating work. Use when handing off ta
 
 # Pi Crew
 
-You are the senior; subagents are capable juniors working in another room. They share your repository but not your head: the owner's conversation and reasoning are not copied into their context. A subagent receives your `task`, its agent system prompt, its configured skills, and resources it can access from the working directory.
+Delegate bounded work to subagents; responsibility for scope, verification, and the final answer stays with you.
 
-It does not know the user's decisions or other subagents' results unless you include them. Delegate to move faster in parallel — then verify what comes back, because the responsibility stays with you.
+Subagents share the repository, not the owner's conversation. They do not know the user's decisions or prior subagent results unless you include them in the task.
 
-**Once delegated, the work belongs to the subagent. Do not perform, continue, pre-empt, or duplicate it; work only on independent scope, or stop and wait.**
+## Select
 
-## First move
+Call `crew_list` and treat each resolved agent's description and capabilities as the source of truth for its role.
 
-Use this workflow only in an owner session where the `crew_*` tools are available. Subagent sessions do not load the pi-crew extension.
+Use multiple subagents when each contributes an independent scope, distinct deliverable, or genuinely complementary perspective. Give every spawn a separate goal and avoid duplicate ownership.
 
-- Call `crew_list`.
-- Choose from the discovered agents — names, capabilities, `interactive` flags — never assume fixed agents exist.
-- Delegate when it adds real value: independent parallel slices, broad searches, focused investigation, review, planning, bounded implementation, verification runs.
-- Skip delegation for tiny tasks, unclear tasks, or blockers you must resolve yourself before anything else can proceed.
+Do not build generic handoff pipelines merely because several roles are available. A subagent should perform its own bounded investigation unless separate discovery, decision analysis, or planning is independently valuable to the user's request.
 
-Gather only the minimum context needed to write the task.
+Do not use an agent whose stated purpose does not match the requested deliverable.
 
-## Writing the task
+## Delegate
 
-Write every task for a competent engineer who just walked in: full intent, zero shared memory.
+- Delegate for useful independent work such as broad discovery, focused planning or review, bounded implementation, and verification. Skip tiny tasks where delegation adds no value; resolve unclear scope or blocking decisions first.
+- Gather only enough context to write the assignment; leave delegated investigation to the subagent.
+- Read-only reviewers may inspect the same scope for distinct concerns; serialize work that may edit the same files.
 
-Anything decided in your session — user choices, constraints, conclusions, prior subagent findings — must be restated concisely in the task or it does not exist for the subagent.
+## Write the assignment
 
-Each subagent is alone: it does not know other subagents exist, in parallel or before it. Never reference other subagents or the session in a task — separate parallel tasks by describing each one's own concern, not its relation to the others.
+- Make every assignment self-contained. Restate relevant user decisions and prior findings; never refer to "above", "earlier", or another agent without including the information needed.
+- Reference readable files, specs, and docs by path instead of pasting them, and state why each reference matters.
+- Include task-specific completion criteria, requested artifacts, and stop conditions when needed; do not repeat generic rules owned by the subagent definition.
+- Write task values in the user's language.
+- Never delegate a vague assignment such as "Fix this", "Investigate what we discussed", or "Implement the plan" without the missing specifics.
 
-- State the intent and the goal, not just the action. Include acceptance criteria and the exact deliverable you need back.
-- Carry over session-only decisions and constraints as short bullets. Skip anything the subagent can discover itself: repo structure, conventions, Git state.
-- Reference files, specs, and docs by path instead of pasting their contents; add one line of intent so the subagent knows why it is reading them.
-- Write in the user's language; if ambiguous, state the expected response language.
-- Add stop conditions where assumptions may fail or scope may creep.
+**Once a task is spawned, do not continue, pre-empt, or duplicate that work. Work only on independent scope; if none remains, end the turn and let the result arrive without polling.**
 
-`brief` is a short label, preferably under 80 characters, stating intent only — no criteria, paths, or secrets.
+## Integrate
 
-Never spawn tasks like "Fix this", "Investigate the bug we discussed", or "Implement the plan".
-
-Parallel spawns must own independent, non-overlapping slices. Read-only reviewers may share a scope when evaluating distinct concerns; serialize anything that may edit the same files.
-
-## While they work
-
-`crew_spawn` returns immediately; ownership of the delegated task has transferred.
-
-- Do not perform, continue, pre-empt, or duplicate that task.
-- Work only on independent scope.
-- If none remains, end the turn. Never wait with `sleep`, timers, loops, repeated commands, or `crew_list`; results arrive automatically. An intermediate result may not trigger a new turn while another subagent is still running.
-
-## When results return
-
-Results are reports to inspect, not verdicts to forward.
-
-Judge each against the acceptance criteria you set, and verify implementation work yourself — read the diff, run the check — before relying on it or presenting it to the user. Never invent or predict a result that has not arrived.
-
-- Conflicting results: name the conflict, compare evidence, resolve with facts or a targeted follow-up. Never average or silently pick one.
-- Incomplete result: follow up if the subagent is interactive and `waiting`; otherwise spawn fresh.
-- Errored or aborted: report the status; continue only if remaining results suffice.
-
-Only interactive subagents can take follow-ups; a non-interactive subagent's session ends with its result — there is no one left to answer.
-
-A fresh spawn knows nothing about the previous task: restate the intent, what was already done or found, and what must change.
-
-You own the final synthesis. The user hears your conclusion, not forwarded reports.
-
-## Interactive lifecycle
-
-A `waiting` interactive subagent keeps its session alive for follow-ups. Use `crew_respond` (fire-and-forget; wait for the steering result) when you need another answer, and `crew_done` only when the exchange is complete. Use `crew_abort` only for owned active subagents whose task became obsolete, wrong, or cancelled; choose exactly one mode: `subagent_id`, `subagent_ids`, or `all=true`.
+- Treat results as reports to evaluate against the assignment's goal and instructions, not answers to forward. Check each result before relying on it.
+- Use only results that have actually arrived; never invent or predict a pending result.
+- Resolve conflicting results from evidence or a targeted follow-up; do not average or silently choose.
+- For an incomplete result, follow up when the agent is `waiting`; otherwise delegate a new self-contained task.
+- Close a waiting agent when the exchange is complete. Abort work only when it has become obsolete, incorrect, or cancelled.
+- Continue after an error or abort only when the remaining evidence is sufficient.
+- Synthesize the final answer yourself.

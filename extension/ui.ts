@@ -115,8 +115,7 @@ export function sendCrewListActiveWarning(
 	sendWithDeliveryPolicy(
 		{
 			customType: "crew-list-warning",
-			content:
-				"⚠ Active subagents detected. Do not poll crew_list for completion — results arrive as steering messages. Continue with unrelated work or end your turn and wait for the steering messages.",
+			content: "⚠ Active subagents detected. Do not poll crew_list; results arrive automatically.",
 			display: true,
 		},
 		sendMessage,
@@ -142,8 +141,8 @@ function getStatusColor(status: CrewResultMessageDetails["status"]): "success" |
 type MessageRenderer = Parameters<ExtensionAPI["registerMessageRenderer"]>[1];
 type MessageRendererTheme = Parameters<MessageRenderer>[2];
 
-function renderWarningMessage(content: unknown, theme: MessageRendererTheme): Box {
-	const box = new Box(1, 1, (text) => theme.bg("customMessageBg", text));
+function renderWarningMessage(content: unknown, theme: MessageRendererTheme, outputPad: number): Box {
+	const box = new Box(outputPad, 1, (text) => theme.bg("customMessageBg", text));
 	box.addChild(new Text(theme.fg("warning", String(content ?? "")), 0, 0));
 	return box;
 }
@@ -154,7 +153,7 @@ function linkFilePath(filePath: string): string {
 }
 
 export function registerCrewMessageRenderers(pi: ExtensionAPI): void {
-	pi.registerMessageRenderer("crew-result", (message, { expanded }, theme) => {
+	pi.registerMessageRenderer("crew-result", (message, { expanded, outputPad }, theme) => {
 		const details = message.details as CrewResultMessageDetails | undefined;
 		const title = details ? getCrewResultTitle(details) : "Subagent update";
 		const icon = details
@@ -163,7 +162,7 @@ export function registerCrewMessageRenderers(pi: ExtensionAPI): void {
 		const header = `${icon} ${theme.fg("toolTitle", theme.bold(title))}`;
 		const body = details?.body ?? (!details && message.content ? String(message.content) : undefined);
 
-		const box = new Box(1, 1, (text) => theme.bg("customMessageBg", text));
+		const box = new Box(outputPad, 1, (text) => theme.bg("customMessageBg", text));
 		box.addChild(new Text(header, 0, 0));
 
 		if (details?.sessionFile) {
@@ -185,13 +184,23 @@ export function registerCrewMessageRenderers(pi: ExtensionAPI): void {
 		return box;
 	});
 
-	pi.registerMessageRenderer("crew-list-warning", (message, _options, theme) => renderWarningMessage(message.content, theme));
+	pi.registerMessageRenderer("crew-list-warning", (message, { outputPad }, theme) => renderWarningMessage(message.content, theme, outputPad));
 }
 
-export function renderCrewCall(theme: ToolTheme, name: string, id: string, preview?: string): Box {
+export function renderCrewCall(
+	theme: ToolTheme,
+	name: string,
+	id: string,
+	preview?: string,
+	expandedMarkdown?: string,
+): Box {
 	const box = new Box(1, 1);
 	box.addChild(new Text(theme.fg("toolTitle", theme.bold(`${name} `)) + theme.fg("accent", id), 0, 0));
-	if (preview) box.addChild(new Text(theme.fg("dim", preview), 0, 0));
+	if (expandedMarkdown) {
+		box.addChild(new Markdown(expandedMarkdown, 0, 0, getMarkdownTheme()));
+	} else if (preview) {
+		box.addChild(new Text(theme.fg("dim", preview), 0, 0));
+	}
 	return box;
 }
 

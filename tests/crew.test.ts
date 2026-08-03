@@ -7,6 +7,7 @@ import {
 } from "../extension/crew.js";
 import type { AgentConfig } from "../extension/catalog.js";
 import { formatSubagentSessionName, type SubagentRunner, type SubagentRunnerCallbacks } from "../extension/subagent-session.js";
+import type { CrewTask } from "../extension/task.js";
 import type { SubagentStatus } from "../extension/ui.js";
 
 const agentConfig: AgentConfig = {
@@ -14,6 +15,12 @@ const agentConfig: AgentConfig = {
 	description: "scout description",
 	systemPrompt: "scout prompt",
 	filePath: "/agents/scout.md",
+};
+
+const task: CrewTask = {
+	goal: "Complete the test assignment.",
+	context: [],
+	instructions: ["Run the test task."],
 };
 
 interface SentMessage {
@@ -96,7 +103,7 @@ function setup(opts: {
 function spawn(crew: CrewRuntime, ownerSessionId = "owner-1", config: AgentConfig = agentConfig): string {
 	return crew.spawn(
 		config,
-		"task",
+		task,
 		"/repo",
 		ownerSessionId,
 		{ model: undefined, modelRegistry: {} as never, agentDir: "/home/.pi/agent", brief: "task brief" },

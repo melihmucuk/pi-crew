@@ -3,6 +3,7 @@ import type { Api, Model } from "@earendil-works/pi-ai";
 import type { AgentSession, ModelRegistry } from "@earendil-works/pi-coding-agent";
 import type { AgentConfig } from "./catalog.js";
 import type { BootstrapContext, SubagentRunner, SubagentRunnerCallbacks } from "./subagent-session.js";
+import type { CrewTask } from "./task.js";
 import { SubagentSessionRunner } from "./subagent-session.js";
 import {
 	type SendMessageFn,
@@ -35,7 +36,7 @@ export interface SubagentToolActivity {
 export interface SubagentState {
 	id: string;
 	agentConfig: AgentConfig;
-	task: string;
+	task: CrewTask;
 	brief: string;
 	status: SubagentStatus;
 	ownerSessionId: string;
@@ -171,7 +172,7 @@ export class CrewRuntime {
 
 	spawn(
 		agentConfig: AgentConfig,
-		task: string,
+		task: CrewTask,
 		cwd: string,
 		ownerSessionId: string,
 		ctx: SpawnContext,
@@ -254,7 +255,7 @@ export class CrewRuntime {
 			.map(buildActiveAgentSummary);
 	}
 
-	private createAgent(agentConfig: AgentConfig, task: string, brief: string, ownerSessionId: string): SubagentState {
+	private createAgent(agentConfig: AgentConfig, task: CrewTask, brief: string, ownerSessionId: string): SubagentState {
 		const id = generateId(agentConfig.name, new Set(this.agents.keys()));
 		const state: SubagentState = {
 			id,
@@ -424,7 +425,7 @@ export class CrewRuntime {
 	}
 }
 
-const CREW_RUNTIME_VERSION = 2;
+const CREW_RUNTIME_VERSION = 3;
 const crewRuntimeKey = Symbol.for("pi-crew.runtime");
 const globalWithCrewRuntime = globalThis as typeof globalThis & Record<symbol, (CrewRuntime & { __piCrewRuntimeVersion?: number }) | undefined>;
 

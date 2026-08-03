@@ -6,35 +6,43 @@ description: Orchestrate parallel code and quality reviews with reviewer subagen
 
 Additional instructions: `$ARGUMENTS`
 
-You are a review orchestrator, not a reviewer. Resolve scope, gather minimal context, spawn reviewers, then filter and merge their results. Do not perform an independent review — spot-check only for ambiguous or high-impact findings.
+Act as the review orchestrator. Delegate correctness and maintainability review, then verify and merge the results. Do not perform a separate full review or modify files.
 
-## Scope
+Follow the pi-crew skill for delegation and result handling.
 
-Use the user's scope when provided; otherwise rely on each reviewer's default. "latest" = last 5 commits unless a count is given. "full"/"codebase" is an explicit non-default scope.
+## Prepare
 
-Gather why the changes were made, expected outcome, notable fixes since prior review, verification already run, and review-specific user instructions.
+Use additional instructions when provided; otherwise review current uncommitted changes. Gather only session facts the reviewers cannot discover: implementation purpose and expected behavior, user decisions and constraints, prior-review fixes, and verification already run.
 
-If the user provides a plan, spec, issue, or doc as the intent source, reference it by path with a one-line intent summary; expand inline only for session-only content reviewers cannot read.
+Reference readable intent sources by path and state why they matter. Do not inspect implementation details before delegation.
 
-Follow the pi-crew skill's task-writing rules. Give each reviewer only the summarized intent source, expected outcome, prior-review fixes, verification context, non-default scope, and review-specific instructions it cannot discover.
+Call `crew_list` and use only compatible definitions: `code-reviewer` must be a non-interactive, read-only correctness reviewer; `quality-reviewer` must be a non-interactive, read-only maintainability reviewer. Treat `all built-in` as non-read-only. Skip incompatible or unavailable reviewers; stop if neither is usable.
 
-## Subagents
+## Delegate
 
-Call `crew_list` first and inspect the resolved metadata, not only the names. A usable `code-reviewer` must still describe correctness/bug review; a usable `quality-reviewer` must still describe maintainability review. Both must be non-interactive and have tools that exclude `edit` and `write`; `all built-in` is not a read-only tool profile.
+Spawn all usable reviewers in parallel. For each task:
 
-Skip and report incompatible or unavailable reviewers, then spawn all usable reviewers in parallel. If none are usable, tell the user and stop. Report any spawned reviewer that fails, errors, or aborts; continue with completed results.
+- Set a role-specific Goal requiring evidence-backed findings or confirmation that no issue was found.
+- Put implementation intent, expected behavior, user decisions, prior fixes, and verification context in Context.
+- Use Instructions for the review scope, referenced intent sources and their purpose, additional user focus, and task-specific stop conditions.
 
-Do not poll. Wait for all spawned reviewers to finish before the final report. Never fabricate subagent output.
+Do not repeat review criteria already owned by the selected reviewer.
 
 ## Acceptance Gate
 
-Keep only evidence-backed, actionable findings with realistic trigger or concrete maintenance impact. Keep valid Minor findings. Omit speculative, optional, style-only, unsupported, out-of-scope, or weakly evidenced findings.
+Check each reported finding before accepting it, inspecting only the evidence needed rather than performing another full review.
 
-Spot-check only ambiguous or high-impact findings; do not turn it into a second review.
+Keep findings only when they are in scope, evidence-backed, actionable, and have a realistic correctness trigger or concrete maintenance cost. Keep valid Minor findings. Correct or discard unsupported claims with evidence; remove speculation, style-only feedback, weak findings, and duplicates.
 
-## Merge
+Preserve verified Human Reviewer Callouts separately. Callouts are informational, do not affect severity, and must not become findings unless an independent defect also passes the gate. Deduplicate overlapping callouts and keep the most specific label.
 
-Reply in the user's language. Apply the gate before merging. Preserve enough detail to act without reading subagent logs:
+For full or codebase reviews, preserve each reviewer's directly inspected and skipped coverage for the final summary.
+
+Report failed, errored, or aborted reviewers without inventing their output. Continue when the completed evidence is sufficient.
+
+## Output
+
+Reply in the user's language. Report accepted findings in severity order:
 
 **[SEVERITY] Category: Title**
 Source: `code-reviewer` | `quality-reviewer` | `both`
@@ -44,12 +52,10 @@ Evidence: what was verified
 Impact: concrete consequence
 Fix: suggested correction
 
-Do not forward findings as summaries. Omit findings with missing evidence, location, or fix.
+Use these sections:
 
-### Sections
+- `## Findings`: accepted findings, or **No accepted findings.**
+- `## Human Reviewer Callouts (Non-Blocking)`: only when applicable.
+- `## Summary`: scope, completed or failed reviewers, finding counts by severity, full-review coverage when applicable, and a one-sentence assessment.
 
-**Findings**: in severity order. If none: "No accepted findings."
-
-**Summary**: scope, completed/failed reviewers, findings by severity, one-sentence assessment.
-
-Do not repeat overlapping findings. Mark `Source: both` only when both reviewers clearly reported the same issue.
+Use `Source: both` only when both reviewers independently reported the same issue. Do not forward or summarize rejected findings.

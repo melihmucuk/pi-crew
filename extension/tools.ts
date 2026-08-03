@@ -17,6 +17,12 @@ import type {
   CrewRuntime,
 } from "./crew.js";
 import {
+  CrewTaskSchema,
+  type CrewTask,
+  formatCrewTask,
+  validateCrewTask,
+} from "./task.js";
+import {
   STATUS_ICON,
   renderCrewCall,
   renderCrewResult,
@@ -78,6 +84,8 @@ function formatAvailableAgents(agents: AgentConfig[]): string[] {
       "",
       `name: ${agent.name}`,
       `description: ${agent.description}`,
+      `model: ${agent.model ?? "owner session model"}`,
+      `thinking: ${agent.thinking ?? "model default"}`,
       `interactive: ${agent.interactive ? "true" : "false"}`,
       `tools: ${tools}`,
       `skills: ${skills}`,
@@ -103,6 +111,7 @@ function formatActiveAgents(running: ActiveAgentSummary[]): string[] {
       `id: ${agent.id}`,
       `name: ${agent.agentName}`,
       `status: ${icon} ${agent.status}`,
+      `model: ${agent.model ?? "resolving"}`,
     ];
   });
 }
@@ -220,7 +229,7 @@ export function registerCrewTools(
     },
   });
 
-  registerActionTool<{ subagent: string; brief: string; task: string }>(pi, {
+  registerActionTool<{ subagent: string; brief: string; task: CrewTask }>(pi, {
     name: "crew_spawn",
     label: "Spawn Crew",
     description: "Spawn a non-blocking subagent in an isolated session.",
@@ -230,19 +239,17 @@ export function registerCrewTools(
         description:
           "Concise task label for session lists, ideally under 80 characters. This is not the full task.",
       }),
-      task: Type.String({
-        description: "Full self-contained task to delegate to the subagent",
-      }),
-    }),
-    promptSnippet: "Spawn a discovered subagent for delegated work.",
+      task: CrewTaskSchema,
+    }, { additionalProperties: false }),
+    constrainedSampling: { type: "json_schema", strict: "prefer" },
+    promptSnippet: "Spawn a subagent for delegated work.",
     promptGuidelines: [
-      "crew_spawn: Keep brief short; put necessary context and criteria in task.",
-      "crew_spawn: Do not duplicate delegated work; continue only with independent scope.",
-      "crew_spawn: If none remains, end the turn—never sleep or poll; results arrive automatically.",
+      "crew_spawn: Never duplicate delegated work; continue only with independent scope, otherwise end the turn—results arrive asynchronously, so do not sleep or poll.",
     ],
     action: (params, ctx) => {
       const brief = params.brief.trim();
       if (!brief) throw new Error("brief is required and must not be empty.");
+      validateCrewTask(params.task);
 
       const toolCtx = getToolContext(ctx);
       const { agents, warnings } = discoverAgents(toolCtx.cwd);
@@ -273,15 +280,29 @@ export function registerCrewTools(
         },
         extensionDir,
       );
-      return toolSuccess(
-        `Subagent '${subagent.name}' spawned as ${id}. Do independent work or end your turn—never duplicate, sleep, or poll. Results arrive automatically.`,
-        { id, agentName: subagent.name, brief, task: params.task },
-      );
+      return toolSuccess(`Subagent '${subagent.name}' spawned as ${id}.`, {
+        id,
+      });
     },
-    renderCall(args, theme, _context) {
+    renderCall(args, theme, context) {
       const subagent = args.subagent || "...";
       const title = args.brief ? `${subagent} · ${args.brief}` : subagent;
-      return renderCrewCall(theme, "crew_spawn", title, args.task);
+      let expandedTask: string | undefined;
+      if (context.expanded && context.argsComplete) {
+        try {
+          validateCrewTask(args.task);
+          expandedTask = formatCrewTask(args.task);
+        } catch {
+          // Keep rendering partial or invalid tool arguments with the compact preview.
+        }
+      }
+      return renderCrewCall(
+        theme,
+        "crew_spawn",
+        title,
+        args.task?.goal,
+        expandedTask,
+      );
     },
   });
 
@@ -384,7 +405,7 @@ export function registerCrewTools(
     }),
     promptSnippet: "Respond to a waiting interactive subagent.",
     promptGuidelines: [
-      "crew_respond: Send a complete follow-up only to a waiting interactive subagent.",
+      "crew_respond: Send a complete follow-up to a waiting interactive subagent.",
     ],
     action: (params, ctx) => {
       const { callerSessionId } = getToolContext(ctx);
@@ -395,8 +416,8 @@ export function registerCrewTools(
       );
       if (error) throw new Error(error);
       return toolSuccess(
-        `Message sent to subagent ${params.subagent_id}. Response will be delivered as a steering message.`,
-        { id: params.subagent_id, message: params.message },
+        `Message sent to subagent ${params.subagent_id}. Response will be delivered asynchronously.`,
+        { id: params.subagent_id },
       );
     },
     renderCall(args, theme, _context) {

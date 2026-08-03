@@ -6,23 +6,6 @@ import * as piCodingAgent from "@earendil-works/pi-coding-agent";
 
 const PROJECT_CONFIG_DIR_NAME = piCodingAgent.CONFIG_DIR_NAME ?? ".pi";
 
-const SUPPORTED_TOOL_NAMES_LITERAL = [
-	"read",
-	"bash",
-	"edit",
-	"write",
-	"grep",
-	"find",
-	"ls",
-] as const;
-
-export type SupportedToolName = (typeof SUPPORTED_TOOL_NAMES_LITERAL)[number];
-export const SUPPORTED_TOOL_NAMES = Object.freeze([...SUPPORTED_TOOL_NAMES_LITERAL] as SupportedToolName[]);
-
-function isSupportedToolName(name: string): name is SupportedToolName {
-	return SUPPORTED_TOOL_NAMES.includes(name as SupportedToolName);
-}
-
 export interface ParsedModel {
 	provider: string;
 	modelId: string;
@@ -32,7 +15,7 @@ interface AgentConfigFields {
 	model?: string;
 	parsedModel?: ParsedModel;
 	thinking?: ThinkingLevel;
-	tools?: SupportedToolName[];
+	tools?: string[];
 	skills?: string[];
 	compaction?: boolean;
 	interactive?: boolean;
@@ -88,8 +71,7 @@ type ParsedFieldWarning =
 	| { code: "invalid-list-format"; fieldName: ParsedListFieldName }
 	| { code: "invalid-type"; fieldName: ParsedFieldName; expected: "string" | "boolean" }
 	| { code: "invalid-model-format"; model: string }
-	| { code: "invalid-thinking-level"; thinking: string }
-	| { code: "unknown-tools"; tools: string[] };
+	| { code: "invalid-thinking-level"; thinking: string };
 
 interface ParsedFieldSet extends AgentConfigFields {
 	warnings: ParsedFieldWarning[];
@@ -153,8 +135,6 @@ function formatFieldWarning(subject: WarningSubject, name: string, warning: Pars
 			return `${prefix}: invalid model format "${warning.model}" (expected "provider/model-id"), ignoring model field`;
 		case "invalid-thinking-level":
 			return `${prefix}: invalid thinking level "${warning.thinking}", ignoring`;
-		case "unknown-tools":
-			return `${prefix}: unknown tools ${warning.tools.map((toolName) => `"${toolName}"`).join(", ")}, ignoring`;
 	}
 }
 
@@ -217,13 +197,8 @@ function parseThinkingField(value: unknown, options: ParseFieldOptions): Pick<Pa
 
 function parseToolsField(value: unknown, options: ParseFieldOptions): Pick<ParsedFieldSet, "tools" | "warnings"> {
 	const parsedTools = parseListField(value, "tools");
-	const validTools = parsedTools.values.filter(isSupportedToolName);
-	const invalidTools = parsedTools.values.filter((toolName) => !isSupportedToolName(toolName));
-	const warnings: ParsedFieldWarning[] = [...parsedTools.warnings];
-	if (invalidTools.length > 0) warnings.push({ code: "unknown-tools", tools: invalidTools });
-	if (invalidTools.length > 0 && validTools.length === 0 && !options.setValueOnInvalidType) return { warnings };
-	if (parsedTools.warnings.length > 0 && !options.setValueOnInvalidType) return { warnings };
-	return { tools: validTools, warnings };
+	if (parsedTools.warnings.length > 0 && !options.setValueOnInvalidType) return { warnings: parsedTools.warnings };
+	return { tools: parsedTools.values, warnings: parsedTools.warnings };
 }
 
 function parseSkillsField(value: unknown, options: ParseFieldOptions): Pick<ParsedFieldSet, "skills" | "warnings"> {

@@ -108,6 +108,30 @@ describe("catalog", () => {
 		assert.equal(result.warnings.length, 0);
 	});
 
+	it("preserves custom Pi tool names from definitions and overrides", () => {
+		const result = discover(
+			[
+				{
+					agentsDir: "/pkg/agents",
+					files: [
+						{ filePath: "/pkg/agents/scout.md", content: agentMd("scout", { tools: ["read", "project_search"] }) },
+						{ filePath: "/pkg/agents/oracle.md", content: agentMd("oracle", { tools: ["read"] }) },
+					],
+				},
+			],
+			[
+				{
+					filePath: "/repo/.pi/pi-crew.json",
+					content: JSON.stringify({ agents: { oracle: { tools: ["read", "web_search", "web_fetch"] } } }),
+				},
+			],
+		);
+
+		assert.deepEqual(result.agents.find((agent) => agent.name === "scout")?.tools, ["read", "project_search"]);
+		assert.deepEqual(result.agents.find((agent) => agent.name === "oracle")?.tools, ["read", "web_search", "web_fetch"]);
+		assert.equal(result.warnings.length, 0);
+	});
+
 	it("parses definition fields and preserves explicit empty override lists through discovery", () => {
 		const result = discover(
 			[
@@ -119,7 +143,7 @@ describe("catalog", () => {
 							content: agentMd("scout", {
 								model: "bad-model",
 								thinking: "high",
-								tools: ["read", "missing"],
+								tools: ["read", "custom_tool"],
 								skills: ["pi-crew"],
 								compaction: false,
 								interactive: true,
@@ -145,7 +169,6 @@ describe("catalog", () => {
 		assert.equal(scout?.compaction, false);
 		assert.equal(scout?.interactive, true);
 		assert.match(warningText(result), /invalid model format "bad-model"/);
-		assert.match(warningText(result), /unknown tools "missing"/);
 		assert.match(warningText(result), /field "name" is not overridable/);
 		assert.match(warningText(result), /unknown field "unknown"/);
 		assert.match(warningText(result), /field "interactive" must be a boolean/);
