@@ -39,11 +39,16 @@ interface BootstrapOptions {
 	cwd: string;
 	ctx: BootstrapContext;
 	extensionResolvedPath: string;
+	signal: AbortSignal;
 }
 
 interface BootstrapResult {
 	session: AgentSession;
 	warnings: string[];
+}
+
+interface SubagentSessionRunnerOptions {
+	bootstrap?: (opts: BootstrapOptions) => Promise<BootstrapResult>;
 }
 
 interface PromptOutcome {
@@ -119,23 +124,45 @@ function snapshotProviderConfig(
 	};
 }
 
+// Keep this structural: supported Pi versions before 0.84 do not export the error class.
+function isCredentialSynchronizationError(error: unknown): error is Error & { providerId: string; cause?: unknown } {
+	return error instanceof Error
+		&& error.name === "CredentialSynchronizationError"
+		&& typeof (error as { providerId?: unknown }).providerId === "string";
+}
+
 async function transferRuntimeApiKey(
 	providerId: string,
 	ownerRegistry: ModelRegistry,
 	modelRuntime: ModelRuntime,
+	signal: AbortSignal,
 ): Promise<void> {
 	const apiKey = await ownerRegistry.getApiKeyForProvider(providerId);
 	if (!apiKey) {
 		throw new Error(`Configured authentication for provider "${providerId}" cannot be transferred to the subagent runtime`);
 	}
-	await modelRuntime.setRuntimeApiKey(providerId, apiKey, { allowNetwork: false });
+	try {
+		await modelRuntime.setRuntimeApiKey(providerId, apiKey, { signal });
+	} catch (error) {
+		if (!isCredentialSynchronizationError(error)) throw error;
+		const cause = error.cause instanceof Error ? error.cause.message : error.cause ? String(error.cause) : undefined;
+		throw new Error(
+			`Authentication transfer for provider "${error.providerId}" was committed, but child runtime synchronization failed${cause ? `: ${cause}` : ""}`,
+			{ cause: error },
+		);
+	}
 }
 
-async function createChildModelRuntime(agentConfig: AgentConfig, ctx: BootstrapContext): Promise<ModelRuntime> {
+async function createChildModelRuntime(
+	agentConfig: AgentConfig,
+	ctx: BootstrapContext,
+	signal: AbortSignal,
+): Promise<ModelRuntime> {
 	const modelRuntime = await ModelRuntime.create({
 		authPath: join(ctx.agentDir, "auth.json"),
 		modelsPath: join(ctx.agentDir, "models.json"),
 		allowModelNetwork: false,
+		signal,
 	});
 	const requiredProviderIds = getRequiredProviderIds(agentConfig, ctx);
 	const ownerModels = ctx.modelRegistry.getAll();
@@ -154,14 +181,14 @@ async function createChildModelRuntime(agentConfig: AgentConfig, ctx: BootstrapC
 	for (const providerId of requiredProviderIds) {
 		const ownerAuth = ctx.modelRegistry.getProviderAuthStatus(providerId);
 		if (ownerAuth.configured && ownerAuth.source === "runtime") {
-			await transferRuntimeApiKey(providerId, ctx.modelRegistry, modelRuntime);
+			await transferRuntimeApiKey(providerId, ctx.modelRegistry, modelRuntime, signal);
 		}
 	}
 
 	for (const providerId of requiredProviderIds) {
 		const ownerAuth = ctx.modelRegistry.getProviderAuthStatus(providerId);
-		if (ownerAuth.configured && !await modelRuntime.checkAuth(providerId)) {
-			await transferRuntimeApiKey(providerId, ctx.modelRegistry, modelRuntime);
+		if (ownerAuth.configured && !await modelRuntime.checkAuth(providerId, { signal })) {
+			await transferRuntimeApiKey(providerId, ctx.modelRegistry, modelRuntime, signal);
 		}
 	}
 
@@ -183,9 +210,9 @@ function getSkillWarnings(agentConfig: AgentConfig, resourceLoader: DefaultResou
 
 async function bootstrapSession(opts: BootstrapOptions): Promise<BootstrapResult> {
 	const warnings: string[] = [];
-	const { agentConfig, cwd, ctx, extensionResolvedPath } = opts;
+	const { agentConfig, cwd, ctx, extensionResolvedPath, signal } = opts;
 
-	const modelRuntime = await createChildModelRuntime(agentConfig, ctx);
+	const modelRuntime = await createChildModelRuntime(agentConfig, ctx, signal);
 	const model = resolveModel(agentConfig, ctx.model, modelRuntime);
 	const tools = resolveTools(agentConfig);
 
@@ -205,6 +232,7 @@ async function bootstrapSession(opts: BootstrapOptions): Promise<BootstrapResult
 		appendSystemPromptOverride: (base) => agentConfig.systemPrompt.trim() ? [...base, agentConfig.systemPrompt] : base,
 	});
 	await resourceLoader.reload();
+	signal.throwIfAborted();
 	warnings.push(...getSkillWarnings(agentConfig, resourceLoader));
 
 	const settingsManager = SettingsManager.inMemory({
@@ -275,10 +303,20 @@ export function formatSubagentSessionName(state: Pick<SubagentState, "agentConfi
 }
 
 export class SubagentSessionRunner implements SubagentRunner {
-	constructor(private readonly callbacks: SubagentRunnerCallbacks) {}
+	private readonly bootstrapControllers = new WeakMap<SubagentState, AbortController>();
+	private readonly bootstrap: (opts: BootstrapOptions) => Promise<BootstrapResult>;
+
+	constructor(
+		private readonly callbacks: SubagentRunnerCallbacks,
+		opts: SubagentSessionRunnerOptions = {},
+	) {
+		this.bootstrap = opts.bootstrap ?? bootstrapSession;
+	}
 
 	start(state: SubagentState, opts: StartOptions): void {
-		void this.spawnSession(state, opts);
+		const controller = new AbortController();
+		this.bootstrapControllers.set(state, controller);
+		void this.spawnSession(state, opts, controller);
 	}
 
 	respond(state: SubagentState, message: string): void {
@@ -286,6 +324,7 @@ export class SubagentSessionRunner implements SubagentRunner {
 	}
 
 	abort(state: SubagentState): void {
+		this.bootstrapControllers.get(state)?.abort();
 		state.session?.abortCompaction();
 		state.session?.abort().catch(() => {});
 	}
@@ -359,16 +398,29 @@ export class SubagentSessionRunner implements SubagentRunner {
 		}
 	}
 
-	private async spawnSession(state: SubagentState, opts: StartOptions): Promise<void> {
+	private async spawnSession(
+		state: SubagentState,
+		opts: StartOptions,
+		bootstrapController: AbortController,
+	): Promise<void> {
 		try {
 			if (isAborted(state)) return;
 
-			const { session, warnings } = await bootstrapSession({
-				agentConfig: state.agentConfig,
-				cwd: opts.cwd,
-				ctx: opts.ctx,
-				extensionResolvedPath: opts.extensionResolvedPath,
-			});
+			let bootstrapResult: BootstrapResult;
+			try {
+				bootstrapResult = await this.bootstrap({
+					agentConfig: state.agentConfig,
+					cwd: opts.cwd,
+					ctx: opts.ctx,
+					extensionResolvedPath: opts.extensionResolvedPath,
+					signal: bootstrapController.signal,
+				});
+			} finally {
+				if (this.bootstrapControllers.get(state) === bootstrapController) {
+					this.bootstrapControllers.delete(state);
+				}
+			}
+			const { session, warnings } = bootstrapResult;
 
 			for (const warning of warnings) opts.onWarning?.(warning);
 			if (!this.attachSpawnedSession(state, session)) return;
