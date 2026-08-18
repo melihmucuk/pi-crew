@@ -75,7 +75,7 @@ export function registerPiCrewExtension(pi: ExtensionAPI, options: RegisterPiCre
 	});
 
 	pi.registerShortcut(CREW_WIDGET_TOGGLE_SHORTCUT, {
-		description: "Toggle latest three or ten subagent tool calls",
+		description: "Toggle subagent widget summary or details",
 		handler: (ctx) => {
 			widgetExpanded = !widgetExpanded;
 			updateWidget(ctx, crew, widgetExpanded);

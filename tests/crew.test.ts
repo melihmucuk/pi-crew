@@ -61,10 +61,10 @@ class FakeRunner implements SubagentRunner {
 		this.callbacks.onToolStart(state, { id: toolCallId, name, target });
 	}
 
-	endTool(id: string, toolCallId: string, isError = false): void {
+	endTool(id: string, toolCallId: string, isError = false, resultSummary?: string): void {
 		const state = this.states.find((candidate) => candidate.id === id);
 		assert.ok(state, `missing state ${id}`);
-		this.callbacks.onToolEnd(state, toolCallId, isError);
+		this.callbacks.onToolEnd(state, toolCallId, isError, resultSummary);
 	}
 
 	settle(id: string, status: Exclude<SubagentStatus, "running">, outcome: { result?: string; error?: string }): void {
@@ -146,15 +146,19 @@ describe("CrewRuntime", () => {
 		for (let index = 1; index <= 12; index++) {
 			runner.startTool(id, `tool-${index}`, index === 12 ? "bash" : "read", `target-${index}`);
 		}
-		runner.endTool(id, "tool-11");
+		runner.endTool(id, "tool-1", true);
+		runner.endTool(id, "tool-11", false, "33 lines");
 		runner.endTool(id, "tool-12", true);
 
 		const summary = crew.getActiveSummariesForOwner("owner-1")[0];
 		assert.equal(summary?.brief, "task brief");
 		assert.equal(summary?.thinking, undefined);
 		assert.equal(summary?.toolCallCount, 12);
+		assert.equal(summary?.toolFailureCount, 2);
 		assert.equal(summary?.toolActivities.length, 10);
-		assert.deepEqual(summary?.toolActivities.slice(-2), [
+		assert.equal(summary?.toolActivities.at(-2)?.resultSummary, "33 lines");
+		assert.match(String(summary?.startedAt), /^\d+$/);
+		assert.deepEqual(summary?.toolActivities.slice(-2).map(({ id, name, target, status }) => ({ id, name, target, status })), [
 			{ id: "tool-11", name: "read", target: "target-11", status: "done" },
 			{ id: "tool-12", name: "bash", target: "target-12", status: "error" },
 		]);

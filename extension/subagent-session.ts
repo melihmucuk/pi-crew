@@ -14,7 +14,12 @@ import {
 import type { AgentConfig } from "./catalog.js";
 import type { SubagentState, SubagentToolActivity } from "./crew.js";
 import { formatCrewTask } from "./task.js";
-import { summarizeToolTarget } from "./tool-activity.js";
+import {
+	summarizeToolName,
+	summarizeToolRequest,
+	summarizeToolResult,
+	summarizeToolTarget,
+} from "./tool-activity.js";
 import type { SubagentStatus } from "./ui.js";
 
 const BUILT_IN_TOOL_NAMES = Object.freeze([
@@ -68,7 +73,7 @@ export interface SubagentRunnerCallbacks {
 	isCurrent: (state: SubagentState) => boolean;
 	onProgress: (ownerSessionId: string) => void;
 	onToolStart: (state: SubagentState, tool: Omit<SubagentToolActivity, "status">) => void;
-	onToolEnd: (state: SubagentState, toolCallId: string, isError: boolean) => void;
+	onToolEnd: (state: SubagentState, toolCallId: string, isError: boolean, resultSummary?: string) => void;
 	onSettled: (
 		state: SubagentState,
 		status: Extract<SubagentStatus, "done" | "waiting" | "error" | "aborted">,
@@ -341,14 +346,15 @@ export class SubagentSessionRunner implements SubagentRunner {
 			if (event.type === "tool_execution_start") {
 				this.callbacks.onToolStart(state, {
 					id: event.toolCallId,
-					name: event.toolName,
+					name: summarizeToolName(event.toolName, event.args),
 					target: summarizeToolTarget(event.toolName, event.args),
+					resultSummary: summarizeToolRequest(event.toolName, event.args),
 				});
 				return;
 			}
 
 			if (event.type === "tool_execution_end") {
-				this.callbacks.onToolEnd(state, event.toolCallId, event.isError);
+				this.callbacks.onToolEnd(state, event.toolCallId, event.isError, summarizeToolResult(event.toolName, event.result));
 				return;
 			}
 

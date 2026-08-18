@@ -31,6 +31,7 @@ export interface SubagentToolActivity {
 	name: string;
 	target: string;
 	status: SubagentToolStatus;
+	resultSummary?: string;
 }
 
 export interface SubagentState {
@@ -47,7 +48,10 @@ export interface SubagentState {
 	model: string | undefined;
 	thinking: string | undefined;
 	toolCallCount: number;
+	toolFailureCount: number;
+	activeToolCallIds: Set<string>;
 	toolActivities: SubagentToolActivity[];
+	startedAt: number;
 	error?: string;
 	result?: string;
 	unsubscribe?: () => void;
@@ -64,7 +68,9 @@ export interface ActiveAgentSummary {
 	model: string | undefined;
 	thinking: string | undefined;
 	toolCallCount: number;
+	toolFailureCount: number;
 	toolActivities: SubagentToolActivity[];
+	startedAt: number;
 }
 
 export interface AbortOwnedResult {
@@ -124,7 +130,9 @@ function buildActiveAgentSummary(state: SubagentState): ActiveAgentSummary {
 		model: state.model,
 		thinking: state.thinking,
 		toolCallCount: state.toolCallCount,
+		toolFailureCount: state.toolFailureCount,
 		toolActivities: state.toolActivities.map((tool) => ({ ...tool })),
+		startedAt: state.startedAt,
 	};
 }
 
@@ -152,7 +160,7 @@ export class CrewRuntime {
 			isCurrent: (state) => this.agents.get(state.id) === state,
 			onProgress: (ownerSessionId) => this.refreshWidgetFor(ownerSessionId),
 			onToolStart: (state, tool) => this.startTool(state, tool),
-			onToolEnd: (state, toolCallId, isError) => this.endTool(state, toolCallId, isError),
+			onToolEnd: (state, toolCallId, isError, resultSummary) => this.endTool(state, toolCallId, isError, resultSummary),
 			onSettled: (state, status, outcome) => this.settleAgent(state, status, outcome),
 		};
 		this.runner = opts.createRunner?.(callbacks) ?? new SubagentSessionRunner(callbacks);
@@ -271,7 +279,10 @@ export class CrewRuntime {
 			model: undefined,
 			thinking: undefined,
 			toolCallCount: 0,
+			toolFailureCount: 0,
+			activeToolCallIds: new Set(),
 			toolActivities: [],
+			startedAt: this.now(),
 		};
 		this.agents.set(id, state);
 		return state;
@@ -284,8 +295,9 @@ export class CrewRuntime {
 	private startTool(state: SubagentState, tool: Omit<SubagentToolActivity, "status">): void {
 		if (this.agents.get(state.id) !== state) return;
 		const activity: SubagentToolActivity = { ...tool, status: "running" };
-		const existing = state.toolActivities.some((candidate) => candidate.id === tool.id);
+		const existing = state.activeToolCallIds.has(tool.id);
 		if (!existing) state.toolCallCount++;
+		state.activeToolCallIds.add(tool.id);
 		state.toolActivities = [
 			...state.toolActivities.filter((candidate) => candidate.id !== tool.id),
 			activity,
@@ -293,11 +305,13 @@ export class CrewRuntime {
 		this.refreshWidgetFor(state.ownerSessionId);
 	}
 
-	private endTool(state: SubagentState, toolCallId: string, isError: boolean): void {
-		if (this.agents.get(state.id) !== state) return;
+	private endTool(state: SubagentState, toolCallId: string, isError: boolean, resultSummary?: string): void {
+		if (this.agents.get(state.id) !== state || !state.activeToolCallIds.delete(toolCallId)) return;
+		if (isError) state.toolFailureCount++;
 		const tool = state.toolActivities.find((activity) => activity.id === toolCallId);
 		if (!tool) return;
 		tool.status = isError ? "error" : "done";
+		if (!isError && resultSummary) tool.resultSummary = resultSummary;
 		this.refreshWidgetFor(state.ownerSessionId);
 	}
 

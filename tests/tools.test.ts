@@ -96,7 +96,7 @@ async function execute(tools: Map<string, any>, name: string, params: object, ct
 describe("tools", () => {
 	it("lists available and active subagents and warns when active jobs exist", async () => {
 		const { crew, tools, ctx, sent } = setup();
-		crew.active = [{ id: "planner-1", agentName: "planner", status: "waiting", inputTokens: 1_000, outputTokens: 200, cost: 0.01, model: "model-x", thinking: "medium", toolCallCount: 0, toolActivities: [] }];
+		crew.active = [{ id: "planner-1", agentName: "planner", status: "waiting", inputTokens: 1_000, outputTokens: 200, cost: 0.01, model: "model-x", thinking: "medium", toolCallCount: 0, toolFailureCount: 0, toolActivities: [], startedAt: 0 }];
 
 		const response = await execute(tools, "crew_list", {}, ctx);
 		await Promise.resolve();
@@ -110,11 +110,11 @@ describe("tools", () => {
 		assert.match(String((sent[0]?.message as { content?: unknown } | undefined)?.content), /Do not poll crew_list/);
 	});
 
-	it("registers crew_spawn with strict constrained sampling and closed object schemas", () => {
+	it("registers crew_spawn with closed object schemas without strict constrained sampling", () => {
 		const { tools } = setup();
 		const spawn = tools.get("crew_spawn");
 
-		assert.deepEqual(spawn.constrainedSampling, { type: "json_schema", strict: "prefer" });
+		assert.equal(spawn.constrainedSampling, undefined);
 		assert.equal(spawn.parameters.additionalProperties, false);
 		assert.equal(spawn.parameters.properties.task.additionalProperties, false);
 		assert.equal(tools.get("crew_abort").constrainedSampling, undefined);

@@ -241,7 +241,6 @@ export function registerCrewTools(
       }),
       task: CrewTaskSchema,
     }, { additionalProperties: false }),
-    constrainedSampling: { type: "json_schema", strict: "prefer" },
     promptSnippet: "Spawn a subagent for delegated work.",
     promptGuidelines: [
       "crew_spawn: Never duplicate delegated work; continue only with independent scope, otherwise end the turn—results arrive asynchronously, so do not sleep or poll.",

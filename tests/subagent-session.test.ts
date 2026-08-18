@@ -37,6 +37,9 @@ function createState(id: string, agentConfig: AgentConfig): SubagentState {
 		id,
 		agentConfig,
 		task: task("Run the bootstrap test"),
+		toolFailureCount: 0,
+		activeToolCallIds: new Set(),
+		startedAt: 0,
 		brief: "SDK bootstrap",
 		status: "running",
 		ownerSessionId: "owner-test",
@@ -145,6 +148,9 @@ export default function (pi) {
 		};
 		const state: SubagentState = {
 			id: "sdk-test-1",
+			toolFailureCount: 0,
+			activeToolCallIds: new Set(),
+			startedAt: 0,
 			agentConfig,
 			task: task("Run the test response"),
 			brief: "SDK bootstrap",
@@ -253,6 +259,9 @@ export default function (pi) {
 				brief: "Strict model selection",
 				status: "running",
 				ownerSessionId: "owner-strict-model",
+				toolFailureCount: 0,
+				activeToolCallIds: new Set(),
+				startedAt: 0,
 				session: null,
 				inputTokens: 0,
 				outputTokens: 0,
@@ -389,6 +398,9 @@ export default function (pi) {
 		};
 		const state: SubagentState = {
 			id: "native-sdk-test-1",
+			toolFailureCount: 0,
+			activeToolCallIds: new Set(),
+			startedAt: 0,
 			agentConfig,
 			task: task("Run the native test response"),
 			brief: "Native SDK bootstrap",

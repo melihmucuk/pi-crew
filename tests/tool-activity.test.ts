@@ -1,6 +1,12 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { sanitizeInline, summarizeToolTarget } from "../extension/tool-activity.js";
+import {
+	sanitizeInline,
+	summarizeToolName,
+	summarizeToolRequest,
+	summarizeToolResult,
+	summarizeToolTarget,
+} from "../extension/tool-activity.js";
 
 describe("subagent tool activity summaries", () => {
 	it("prefers useful path-like arguments and removes control sequences", () => {
@@ -14,6 +20,20 @@ describe("subagent tool activity summaries", () => {
 			"npm test · 2 steps",
 		);
 		assert.equal(summarizeToolTarget("bash", { command: "printf 'a && b'" }), "printf");
+	});
+
+	it("adds tool-specific targets and safe result summaries", () => {
+		assert.equal(summarizeToolTarget("read", { path: "/Users/test/project/src/index.ts", offset: 20, limit: 3 }), "/Users/test/project/src/index.ts:20-22");
+		assert.equal(summarizeToolTarget("grep", { pattern: "widget", path: "extension", glob: "*.ts" }), "/widget/ in extension (*.ts)");
+		assert.equal(summarizeToolName("read", { path: "/tmp/pi-crew/SKILL.md" }), "skill");
+		assert.equal(summarizeToolTarget("read", { path: "/tmp/pi-crew/SKILL.md" }), "pi-crew");
+		assert.equal(summarizeToolRequest("write", { content: "one\ntwo\n" }), "2 lines written");
+		assert.equal(summarizeToolRequest("write", { content: "one\r\ntwo" }), "2 lines written");
+		assert.equal(summarizeToolRequest("edit", { edits: [{ oldText: "one\n", newText: "one\ntwo\n" }] }), "+2 −1 lines");
+		assert.equal(summarizeToolResult("read", { content: [{ type: "text", text: "one\ntwo\n" }] }), "2 lines");
+		assert.equal(summarizeToolResult("grep", { content: [{ type: "text", text: "a:1: first\n\nb:2: second\n" }] }), "2 matches");
+		assert.equal(summarizeToolResult("grep", { content: [{ type: "text", text: "file-1- before\nfile:2: match\nfile-3- after\n" }] }), "1 match");
+		assert.equal(summarizeToolResult("grep", { content: [{ type: "text", text: "No matches found" }] }), undefined);
 	});
 
 	it("does not expose sensitive fallback, flag, header, or URL values", () => {

@@ -227,6 +227,22 @@ function formatCost(cost: number): string {
 	return `$${cost.toFixed(4)}`;
 }
 
+function formatDuration(milliseconds: number): string {
+	const seconds = Math.max(0, Math.floor(milliseconds / 1_000));
+	if (seconds < 60) return `${seconds}s`;
+	const minutes = Math.floor(seconds / 60);
+	const remainder = seconds % 60;
+	return remainder === 0 ? `${minutes}m` : `${minutes}m ${remainder}s`;
+}
+
+function toolCallLabel(count: number): string {
+	return `${count} tool call${count === 1 ? "" : "s"}`;
+}
+
+function failureLabel(count: number): string | undefined {
+	return count > 0 ? `${count} failure${count === 1 ? "" : "s"}` : undefined;
+}
+
 export class CrewWidgetComponent implements Component {
 	private agents: ActiveAgentSummary[] = [];
 	private expanded = false;
@@ -253,33 +269,35 @@ export class CrewWidgetComponent implements Component {
 			const brief = sanitizeInline(agent.brief ?? "") || sanitizeInline(agent.agentName);
 			const icon = agent.status === "waiting" ? "⏳" : this.frame;
 			const activities = agent.toolActivities;
-			const toggleAction = this.expanded ? "collapse" : "expand";
+			const limit = this.expanded ? EXPANDED_TOOL_CALL_LIMIT : COMPACT_TOOL_CALL_LIMIT;
+			const visibleActivities = activities.slice(-limit);
+			const toggleAction = this.expanded ? "collapse" : "details";
+			const duration = formatDuration(Date.now() - agent.startedAt);
+			const showing = agent.toolCallCount > limit ? ` · showing latest ${limit}` : "";
+			const failures = failureLabel(agent.toolFailureCount);
+			const status = agent.status === "waiting" ? "waiting for response" : `${STATUS_LABEL[agent.status]} ${duration}`;
 			const header = this.theme.fg("warning", icon) + " "
 				+ this.theme.fg("toolTitle", this.theme.bold(agentId))
 				+ this.theme.fg("muted", ` - ${brief}`)
 				+ this.theme.fg("dim", " | ")
 				+ this.formatKeyHint(CREW_WIDGET_TOGGLE_SHORTCUT, `to ${toggleAction}`);
-			const metadata = this.theme.fg(
+			const usage = `  ${model} · ${agent.thinking ?? "…"} | ↑ ${formatTokens(agent.inputTokens)} · ↓ ${formatTokens(agent.outputTokens)} · ${formatCost(agent.cost)}`;
+			const progress = this.theme.fg(
 				"muted",
-				`  ${agent.toolCallCount} tool calls · ↑ ${formatTokens(agent.inputTokens)} · ↓ ${formatTokens(agent.outputTokens)} · ${formatCost(agent.cost)} · ${model} ${agent.thinking ?? "…"}`,
+				`  ${status} · ${toolCallLabel(agent.toolCallCount)}${failures ? ` · ${failures}` : ""}${showing}`,
 			);
 			lines.push(truncateToWidth(header, width, "…"));
-			lines.push(truncateToWidth(metadata, width, "…"));
+			lines.push(truncateToWidth(this.theme.fg("muted", usage), width, "…"));
+			lines.push(truncateToWidth(progress, width, "…"));
 			if (activities.length > 0) lines.push(truncateToWidth(this.theme.fg("dim", "  ---"), width, "…"));
-			const limit = this.expanded ? EXPANDED_TOOL_CALL_LIMIT : COMPACT_TOOL_CALL_LIMIT;
-			const visibleActivities = activities.slice(-limit);
-			if (this.expanded && agent.toolCallCount > visibleActivities.length) {
-				lines.push(truncateToWidth(
-					this.theme.fg("dim", `  … ${agent.toolCallCount - visibleActivities.length} older tool calls`),
-					width,
-					"…",
-				));
-			}
 			for (const tool of visibleActivities) {
 				const color = tool.status === "error" ? "error" : tool.status === "done" ? "success" : "muted";
 				const target = sanitizeInline(tool.target);
-				const action = "  " + this.theme.fg(color, sanitizeInline(tool.name))
-					+ (target ? this.theme.fg("muted", `  ${target}`) : "");
+				const name = sanitizeInline(tool.name) === "bash" ? "$" : sanitizeInline(tool.name);
+				const result = tool.status === "done" && tool.resultSummary ? ` · ${sanitizeInline(tool.resultSummary)}` : "";
+				const action = "  " + this.theme.fg(color, name)
+					+ (target ? this.theme.fg("muted", `  ${target}`) : "")
+					+ (result ? this.theme.fg("accent", result) : "");
 				lines.push(truncateToWidth(action, width, "…"));
 			}
 		}

@@ -109,12 +109,12 @@ function context(sessionId = "owner-1", sessionFile?: string): ExtensionContextS
 }
 
 describe("extension lifecycle wiring", () => {
-	it("registers an unused Pi shortcut for expanding widget tool calls", () => {
+	it("registers an unused Pi shortcut for toggling widget details", () => {
 		const { shortcuts } = setup();
 
 		assert.deepEqual(shortcuts, [{
 			key: "ctrl+shift+e",
-			description: "Toggle latest three or ten subagent tool calls",
+			description: "Toggle subagent widget summary or details",
 		}]);
 	});
 

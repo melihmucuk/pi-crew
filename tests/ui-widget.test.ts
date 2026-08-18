@@ -24,6 +24,7 @@ function summary(toolCount: number): ActiveAgentSummary {
 			name: `call-${callNumber}`,
 			target: `target-${callNumber}`,
 			status: "done",
+			resultSummary: callNumber === toolCount ? "33 lines" : undefined,
 		};
 	});
 	return {
@@ -37,23 +38,27 @@ function summary(toolCount: number): ActiveAgentSummary {
 		model: "model-x",
 		thinking: "medium",
 		toolCallCount: toolCount,
+		toolFailureCount: 0,
 		toolActivities,
+		startedAt: Date.now(),
 	};
 }
 
 describe("CrewWidgetComponent", () => {
 	it("shows the latest three tool calls in compact mode", () => {
 		const widget = component();
-		widget.setState([summary(12)], "⠋", false);
+		widget.setState([{ ...summary(12), toolFailureCount: 1 }], "⠋", false);
 
 		const output = widget.render(200).join("\n");
-		assert.match(output, /ctrl\+shift\+e to expand/);
-		assert.match(output, /12 tool calls · ↑ 12\.4k · ↓ 1\.2k · \$0\.03/);
+		assert.match(output, /ctrl\+shift\+e to details/);
+		assert.match(output, /⠋ scout-1234 - inspect widget \|/);
+		assert.match(output, /model-x · medium \| ↑ 12\.4k · ↓ 1\.2k · \$0\.03/);
+		assert.match(output, /running 0s · 12 tool calls · 1 failure · showing latest 3/);
 		assert.doesNotMatch(output, /ctx/);
 		assert.doesNotMatch(output, /older tool calls/);
 		assert.doesNotMatch(output, /call-9  target-9/);
 		assert.match(output, /call-10  target-10/);
-		assert.match(output, /call-12  target-12/);
+		assert.match(output, /call-12  target-12 · 33 lines/);
 	});
 
 	it("caps expanded mode at the latest ten calls and reports hidden history", () => {
@@ -61,10 +66,21 @@ describe("CrewWidgetComponent", () => {
 		widget.setState([summary(12)], "⠋", true);
 
 		const output = widget.render(200).join("\n");
-		assert.match(output, /… 2 older tool calls/);
+		assert.match(output, /model-x · medium \| ↑ 12\.4k · ↓ 1\.2k · \$0\.03/);
+		assert.match(output, /12 tool calls · showing latest 10/);
+		assert.doesNotMatch(output, /older tool calls/);
 		assert.doesNotMatch(output, /call-2  target-2/);
 		assert.match(output, /call-3  target-3/);
 		assert.match(output, /call-12  target-12/);
+	});
+
+	it("keeps waiting status with the related tool count", () => {
+		const widget = component();
+		widget.setState([{ ...summary(1), status: "waiting" }], "⠋", false);
+
+		const output = widget.render(200).join("\n");
+		assert.match(output, /⏳ scout-1234 - inspect widget \|/);
+		assert.match(output, /waiting for response · 1 tool call/);
 	});
 
 	it("keeps every expanded widget line within the terminal width", () => {

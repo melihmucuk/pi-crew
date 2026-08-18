@@ -207,18 +207,19 @@ Override values replace the matching frontmatter fields for the named subagent a
 
 ## Status Widget
 
-When the current session owns active subagents, the TUI shows their task labels, model and thinking settings, cumulative input/output tokens and cost, tool-call count, and recent tool activity.
+When the current session owns active subagents, the TUI shows their task labels, elapsed time, lifecycle state, tool-call and failure counts, cumulative input/output tokens and cost, and recent tool activity. Tool rows use safe, compact targets and result summaries where available; raw tool arguments and output are never shown.
 
 On session replacement paths such as `/new`, `/resume`, `/fork`, and `/reload`, subagents keep running and reconnect when their owner session becomes active again. Quitting Pi aborts active subagents.
 
 ```
-⏳ planner-e5f6 - plan config changes | Ctrl+Shift+E  expand
-  6 tool calls · ↑ 16.4k · ↓ 2.2k · $0.05 · gpt-5.4 high
+⠋ planner-e5f6 - plan config changes | Ctrl+Shift+E  details
+  gpt-5.4 · high | ↑ 16.4k · ↓ 2.2k · $0.05
+  running 18s · 6 tool calls · showing latest 3
   ---
-  read  README.md
+  read  README.md:208-240 · 33 lines
 ```
 
-`↑` and `↓` show cumulative input and output tokens for the child session; `$` shows its cumulative cost. Interactive subagents waiting for a response show a ⏳ icon. `Ctrl+Shift+E` toggles between the latest three and latest ten tool calls.
+`↑` and `↓` show cumulative input and output tokens for the child session; `$` shows its cumulative cost. Model and thinking settings remain visible in both modes. Interactive subagents waiting for a response show a ⏳ icon beside their ID and `waiting for response` in the activity line. Summary mode shows the latest three calls; details mode shows the latest ten. If the total exceeds the visible window, the activity line says `showing latest 3` or `showing latest 10` after any failure count, rather than implying unavailable history can be expanded.
 
 ## Acknowledgments
 
