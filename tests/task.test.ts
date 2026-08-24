@@ -27,7 +27,7 @@ describe("structured crew tasks", () => {
 		].join("\n"));
 	});
 
-	it("renders an explicit empty context and rejects blank task fields", () => {
+	it("renders an explicit empty context and rejects blank task fields at runtime", () => {
 		const task = {
 			goal: "Inspect the requested area.",
 			context: [],
@@ -35,9 +35,21 @@ describe("structured crew tasks", () => {
 		};
 		assert.match(formatCrewTask(task), /## Context\n\nNone\./);
 		assert.doesNotThrow(() => validateCrewTask(task));
+		assert.doesNotThrow(() => validateCrewTask({
+			...task,
+			instructions: ["Implement the approved plan:\n\n1. Update the code."],
+		}));
+		assert.throws(
+			() => validateCrewTask({ ...task, goal: " \t\n" }),
+			/task\.goal is required and must not be empty/,
+		);
 		assert.throws(
 			() => validateCrewTask({ ...task, context: [" "] }),
 			/task\.context must be an array of non-empty strings/,
+		);
+		assert.throws(
+			() => validateCrewTask({ ...task, instructions: ["\n\t"] }),
+			/task\.instructions must contain at least one non-empty string/,
 		);
 	});
 });

@@ -1,18 +1,18 @@
 import { Type, type Static } from "typebox";
 import { Errors } from "typebox/value";
 
-const NonBlankStringSchema = Type.String({ minLength: 1, pattern: "\\S" });
+const NonEmptyStringSchema = Type.String({ minLength: 1 });
 
 export const CrewTaskSchema = Type.Object(
 	{
 		goal: Type.String({
-			...NonBlankStringSchema,
+			...NonEmptyStringSchema,
 			description: "The required end result. Describe what success looks like, not the steps or background.",
 		}),
-		context: Type.Array(NonBlankStringSchema, {
+		context: Type.Array(NonEmptyStringSchema, {
 			description: "Task-relevant owner-session facts unavailable to the isolated subagent. Include user intent, decisions, constraints, and prior findings that must carry forward. Exclude actions and repo-discoverable facts unless they are prior findings being handed off. Use an empty array when none is needed.",
 		}),
-		instructions: Type.Array(NonBlankStringSchema, {
+		instructions: Type.Array(NonEmptyStringSchema, {
 			minItems: 1,
 			description: "Concrete task-specific actions to achieve the goal, ordered when needed. Include approved plans verbatim or reference their source file. Do not repeat context or the subagent's generic rules.",
 		}),
@@ -25,15 +25,25 @@ export const CrewTaskSchema = Type.Object(
 
 export type CrewTask = Static<typeof CrewTaskSchema>;
 
-export function validateCrewTask(task: unknown): asserts task is CrewTask {
-	const [error] = Errors(CrewTaskSchema, task);
-	if (!error) return;
-
-	const field = error.instancePath.split("/")[1];
+function throwCrewTaskValidationError(field?: string): never {
 	if (field === "goal") throw new Error("task.goal is required and must not be empty.");
 	if (field === "context") throw new Error("task.context must be an array of non-empty strings.");
 	if (field === "instructions") throw new Error("task.instructions must contain at least one non-empty string.");
 	throw new Error("task is required and must be a structured assignment.");
+}
+
+export function validateCrewTask(task: unknown): asserts task is CrewTask {
+	const [error] = Errors(CrewTaskSchema, task);
+	if (error) throwCrewTaskValidationError(error.instancePath.split("/")[1]);
+
+	const candidate = task as CrewTask;
+	if (!/\S/u.test(candidate.goal)) throwCrewTaskValidationError("goal");
+	if (candidate.context.some((item) => !/\S/u.test(item))) {
+		throwCrewTaskValidationError("context");
+	}
+	if (candidate.instructions.some((item) => !/\S/u.test(item))) {
+		throwCrewTaskValidationError("instructions");
+	}
 }
 
 function formatContext(items: string[]): string {

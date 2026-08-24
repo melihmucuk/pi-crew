@@ -110,13 +110,20 @@ describe("tools", () => {
 		assert.match(String((sent[0]?.message as { content?: unknown } | undefined)?.content), /Do not poll crew_list/);
 	});
 
-	it("registers crew_spawn with closed object schemas without strict constrained sampling", () => {
+	it("registers crew_spawn with closed, grammar-compatible schemas without strict constrained sampling", () => {
 		const { tools } = setup();
 		const spawn = tools.get("crew_spawn");
+		const task = spawn.parameters.properties.task;
 
 		assert.equal(spawn.constrainedSampling, undefined);
 		assert.equal(spawn.parameters.additionalProperties, false);
-		assert.equal(spawn.parameters.properties.task.additionalProperties, false);
+		assert.equal(task.additionalProperties, false);
+		assert.equal(task.properties.goal.pattern, undefined);
+		assert.equal(task.properties.goal.minLength, 1);
+		assert.equal(task.properties.context.items.pattern, undefined);
+		assert.equal(task.properties.context.items.minLength, 1);
+		assert.equal(task.properties.instructions.items.pattern, undefined);
+		assert.equal(task.properties.instructions.items.minLength, 1);
 		assert.equal(tools.get("crew_abort").constrainedSampling, undefined);
 	});
 
