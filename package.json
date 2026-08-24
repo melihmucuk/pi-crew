@@ -1,6 +1,6 @@
 {
   "name": "@melihmucuk/pi-crew",
-  "version": "1.0.30",
+  "version": "1.0.31",
   "type": "module",
   "description": "Non-blocking subagent orchestration for pi coding agent",
   "files": [
@@ -49,7 +49,7 @@
     "@earendil-works/pi-tui": "0.84.2",
     "@types/node": "^25.9.3",
     "tsx": "^4.22.4",
-    "typebox": "1.3.15",
+    "typebox": "1.3.18",
     "typescript": "^6.0.3"
   }
 }
