@@ -4,6 +4,7 @@ import type { Api, AssistantMessage, Model } from "@earendil-works/pi-ai";
 import {
 	type AgentSession,
 	createAgentSession,
+	CredentialSynchronizationError,
 	DefaultResourceLoader,
 	ModelRuntime,
 	type ModelRegistry,
@@ -25,6 +26,7 @@ import type { SubagentStatus } from "./ui.js";
 const BUILT_IN_TOOL_NAMES = Object.freeze([
 	"read",
 	"bash",
+	"powershell",
 	"edit",
 	"write",
 	"grep",
@@ -129,13 +131,6 @@ function snapshotProviderConfig(
 	};
 }
 
-// Keep this structural: supported Pi versions before 0.84 do not export the error class.
-function isCredentialSynchronizationError(error: unknown): error is Error & { providerId: string; cause?: unknown } {
-	return error instanceof Error
-		&& error.name === "CredentialSynchronizationError"
-		&& typeof (error as { providerId?: unknown }).providerId === "string";
-}
-
 async function transferRuntimeApiKey(
 	providerId: string,
 	ownerRegistry: ModelRegistry,
@@ -149,7 +144,7 @@ async function transferRuntimeApiKey(
 	try {
 		await modelRuntime.setRuntimeApiKey(providerId, apiKey, { signal });
 	} catch (error) {
-		if (!isCredentialSynchronizationError(error)) throw error;
+		if (!(error instanceof CredentialSynchronizationError)) throw error;
 		const cause = error.cause instanceof Error ? error.cause.message : error.cause ? String(error.cause) : undefined;
 		throw new Error(
 			`Authentication transfer for provider "${error.providerId}" was committed, but child runtime synchronization failed${cause ? `: ${cause}` : ""}`,

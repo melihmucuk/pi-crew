@@ -350,7 +350,12 @@ export default function (pi) {
 		const providerId = "pi-crew-native-test";
 		const modelId = "native-model";
 		const faux = createFauxCore({ provider: providerId, models: [{ id: modelId }] });
-		faux.setResponses([fauxAssistantMessage("native child prompt succeeded")]);
+		faux.setResponses([(context) => {
+			assert.deepEqual(context.tools?.map((tool) => tool.name).sort(), [
+				"bash", "edit", "find", "grep", "ls", "powershell", "read", "write",
+			]);
+			return fauxAssistantMessage("native child prompt succeeded");
+		}]);
 		const refreshNetworkValues: boolean[] = [];
 		const receivedKeys: Array<string | undefined> = [];
 		const provider: Provider = {
@@ -368,7 +373,7 @@ export default function (pi) {
 			refreshModels: async ({ allowNetwork }) => {
 				refreshNetworkValues.push(allowNetwork);
 			},
-			stream: faux.stream,
+			stream: (model, context) => faux.stream(model, context),
 			streamSimple: (model, context, options) => {
 				receivedKeys.push(options?.apiKey);
 				return faux.streamSimple(model, context, options);
@@ -393,7 +398,6 @@ export default function (pi) {
 			filePath: join(agentDir, "agents", "native-sdk-test.md"),
 			model: `${providerId}/${modelId}`,
 			parsedModel: { provider: providerId, modelId },
-			tools: [],
 			compaction: false,
 		};
 		const state: SubagentState = {
@@ -483,7 +487,7 @@ export default function (pi) {
 				failedRefreshes++;
 				throw new Error("native catalog unavailable");
 			},
-			stream: faux.stream,
+			stream: (model, context) => faux.stream(model, context),
 			streamSimple: faux.streamSimple,
 		};
 

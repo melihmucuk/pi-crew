@@ -20,7 +20,7 @@ From git:
 pi install git:github.com/melihmucuk/pi-crew
 ```
 
-This installs the extension, orchestration skill, prompt templates, and bundled subagents. pi-crew requires Pi 0.82.1 or newer.
+This installs the extension, orchestration skill, prompt templates, and bundled subagents. pi-crew requires Pi 0.84.3 or newer.
 
 ## How It Works
 
@@ -159,7 +159,7 @@ The subagent will follow these instructions when executing tasks.
 | `description` | yes      | Shown in `crew_list` output.                                                                                         |
 | `model`       | no       | `provider/model-id` format (e.g., `anthropic/claude-haiku-4-5`). If omitted, uses the owner's current model.         |
 | `thinking`    | no       | Thinking level: `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`.                                           |
-| `tools`       | no       | Comma-separated list or YAML array of built-in or extension-registered Pi tool names. Omit for all built-ins; use an empty value or list for none. |
+| `tools`       | no       | Comma-separated list or YAML array of built-in or extension-registered Pi tool names. Omit for all built-ins (`read`, `bash`, `powershell`, `edit`, `write`, `grep`, `find`, `ls`); use an empty value or list for none. |
 | `skills`      | no       | Comma-separated list or YAML array of skill names (e.g., `ast-grep`). Omit for all; use an empty value or list for none. |
 | `compaction`  | no       | Enable context compaction. Defaults to `true`.                                                                       |
 | `interactive` | no       | Keep session alive after response for multi-turn conversations. Defaults to `false`.                                 |

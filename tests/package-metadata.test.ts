@@ -59,14 +59,14 @@ describe("package metadata", () => {
 		}
 	});
 
-	it("requires the Pi 0.82.1 API version", () => {
+	it("requires the Pi 0.84.3 API version", () => {
 		for (const packageName of [
 			"@earendil-works/pi-agent-core",
 			"@earendil-works/pi-ai",
 			"@earendil-works/pi-coding-agent",
 			"@earendil-works/pi-tui",
 		]) {
-			assert.equal(packageJson.peerDependencies?.[packageName], ">=0.82.1");
+			assert.equal(packageJson.peerDependencies?.[packageName], ">=0.84.3");
 		}
 	});
 
