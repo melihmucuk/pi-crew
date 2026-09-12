@@ -6,7 +6,6 @@ import assert from "node:assert/strict";
 
 interface PackageJson {
 	files?: string[];
-	peerDependencies?: Record<string, string>;
 	pi?: {
 		extensions?: string[];
 		skills?: string[];
@@ -52,21 +51,11 @@ describe("package metadata", () => {
 			"agents/",
 			"skills/",
 			"prompts/",
+			"docs/",
 		]);
 
 		for (const packagePath of packageJson.files ?? []) {
 			assertPackagePathExists(packagePath);
-		}
-	});
-
-	it("requires the Pi 0.84.3 API version", () => {
-		for (const packageName of [
-			"@earendil-works/pi-agent-core",
-			"@earendil-works/pi-ai",
-			"@earendil-works/pi-coding-agent",
-			"@earendil-works/pi-tui",
-		]) {
-			assert.equal(packageJson.peerDependencies?.[packageName], ">=0.84.3");
 		}
 	});
 

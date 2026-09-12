@@ -42,92 +42,14 @@ function firstScalar(value: unknown): string {
 	return "";
 }
 
-function bashSegments(command: string): string[] {
-	const segments: string[] = [];
-	let current = "";
-	let escaped = false;
-	let quote: "'" | '"' | "`" | undefined;
-	const push = () => {
-		const value = sanitizeInline(current);
-		if (value) segments.push(value);
-		current = "";
-	};
-
-	for (let index = 0; index < command.length; index++) {
-		const character = command[index] ?? "";
-		if (escaped) {
-			current += character;
-			escaped = false;
-			continue;
-		}
-		if (character === "\\" && quote !== "'") {
-			current += character;
-			escaped = true;
-			continue;
-		}
-		if (quote) {
-			current += character;
-			if (character === quote) quote = undefined;
-			continue;
-		}
-		if (character === "'" || character === '"' || character === "`") {
-			current += character;
-			quote = character;
-			continue;
-		}
-		if (character === ";" || character === "\n" || character === "\r") {
-			push();
-			continue;
-		}
-		if (character === "&" || character === "|") {
-			const previous = command[index - 1];
-			const next = command[index + 1];
-			if (previous === ">" || previous === "<" || (character === "&" && next === ">")) {
-				current += character;
-				continue;
-			}
-			push();
-			if (next === character) index++;
-			continue;
-		}
-		current += character;
-	}
-	push();
-	return segments;
-}
-
-function shellWords(segment: string): string[] {
-	return (segment.match(/(?:[^\s"'\\]+|"(?:\\.|[^"\\])*"|'[^']*')+/gu) ?? [])
-		.map((word) => word.replace(/^(?:"([\s\S]*)"|'([\s\S]*)')$/u, (_match, double, single) => String(double ?? single ?? "")));
-}
-
-function safeCommandSummary(segment: string): string {
-	const words = shellWords(segment);
-	while (words[0] && /^[a-z_][a-z0-9_]*=/iu.test(words[0])) words.shift();
-	const executable = sanitizeInline(words[0] ?? "");
-	if (!executable) return "";
-	const command = executable.split("/").at(-1)?.toLowerCase() ?? executable.toLowerCase();
-	const arg = (index: number) => redactSensitiveText(words[index] ?? "");
-
-	if (command === "cd" || command === "git") return arg(1) ? `${executable} ${arg(1)}` : executable;
-	if (["npm", "pnpm", "yarn", "bun"].includes(command)) {
-		const verb = arg(1);
-		if (!verb) return executable;
-		if (["run", "exec", "x"].includes(verb) && arg(2) && !SENSITIVE_KEY.test(arg(2))) return `${executable} ${verb} ${arg(2)}`;
-		return `${executable} ${verb}`;
-	}
-	if (command === "gh") return [executable, arg(1), arg(2)].filter(Boolean).join(" ");
-	if (command === "curl" || command === "wget") {
-		const url = words.find((word) => /^https?:\/\//iu.test(word));
-		return url ? `${executable} ${safeUrl(url)}` : executable;
-	}
-	return executable;
-}
+const BASH_TARGET_LIMIT = 120;
 
 function bashTarget(command: string): string {
-	const segments = bashSegments(command);
-	const first = safeCommandSummary(segments[0] ?? "");
-	return segments.length > 1 ? `${first} · ${segments.length} steps` : first;
+	const lines = command.split(/\r\n|[\r\n]/u).map((line) => line.trim()).filter((line) => line !== "");
+	const first = redactSensitiveText(lines[0] ?? "");
+	if (!first) return "";
+	const text = first.length > BASH_TARGET_LIMIT ? `${first.slice(0, BASH_TARGET_LIMIT - 1)}…` : first;
+	return lines.length > 1 ? `${text} · ${lines.length} lines` : text;
 }
 
 function sourceLineCount(value: string): number {

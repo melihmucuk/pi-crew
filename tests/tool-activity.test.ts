@@ -14,12 +14,17 @@ describe("subagent tool activity summaries", () => {
 		assert.equal(summarizeToolTarget("web_search", { query: "pi widget API" }), "pi widget API");
 	});
 
-	it("summarizes compound bash commands and redacts sensitive assignments", () => {
-		assert.equal(
-			summarizeToolTarget("bash", { command: "API_TOKEN=secret npm test && npm run typecheck" }),
-			"npm test · 2 steps",
-		);
-		assert.equal(summarizeToolTarget("bash", { command: "printf 'a && b'" }), "printf");
+	it("summarizes bash commands by their first line", () => {
+		assert.equal(summarizeToolTarget("bash", { command: "npm test && npm run typecheck" }), "npm test && npm run typecheck");
+		assert.equal(summarizeToolTarget("bash", { command: "  npm test\r\n\n  npm run typecheck  \n" }), "npm test · 2 lines");
+		assert.equal(summarizeToolTarget("bash", { command: "   \n\t\n" }), "");
+	});
+
+	it("truncates long bash commands to 120 characters", () => {
+		const target = summarizeToolTarget("bash", { command: `echo ${"x".repeat(200)}` });
+		assert.equal(target.length, 120);
+		assert.ok(target.startsWith("echo xxx"));
+		assert.ok(target.endsWith("…"));
 	});
 
 	it("adds tool-specific targets and safe result summaries", () => {
@@ -38,12 +43,11 @@ describe("subagent tool activity summaries", () => {
 
 	it("does not expose sensitive fallback, flag, header, or URL values", () => {
 		assert.equal(summarizeToolTarget("custom", { apiKey: "secret" }), "");
-		assert.equal(summarizeToolTarget("bash", { command: "deploy --api-key topsecret" }), "deploy");
+		assert.equal(summarizeToolTarget("bash", { command: "deploy --token=abc" }), "deploy --token=***");
 		assert.equal(
 			summarizeToolTarget("bash", { command: 'curl -H "Authorization: Bearer topsecret" "https://user:pass@example.com/hook?token=secret"' }),
-			"curl https://example.com/hook",
+			'curl -H "Authorization: Bearer ***" "https://example.com/hook"',
 		);
-		assert.equal(summarizeToolTarget("bash", { command: "echo topsecret" }), "echo");
 		assert.equal(summarizeToolTarget("web_extract", { url: "https://example.com/file?signature=secret" }), "https://example.com/file");
 		assert.equal(sanitizeInline("hello\u0000\nworld"), "hello world");
 	});

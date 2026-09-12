@@ -1,9 +1,16 @@
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { stripVTControlCharacters } from "node:util";
+import type { AgentMessage } from "@earendil-works/pi-agent-core";
+import { initTheme, type Theme } from "@earendil-works/pi-coding-agent";
 import { registerPiCrewExtension } from "../extension/index.js";
-import type { ActiveRuntimeBinding } from "../extension/crew.js";
+import type { ActiveAgentSummary, ActiveRuntimeBinding } from "../extension/crew.js";
 
 interface RegisteredHandlers {
+	context?: (event: { messages: AgentMessage[] }, ctx: ExtensionContextStub) => unknown;
 	session_start?: (event: unknown, ctx: ExtensionContextStub) => void;
 	session_shutdown?: (event: { reason: string }, ctx: ExtensionContextStub) => void;
 }
@@ -12,23 +19,34 @@ interface ExtensionContextStub {
 	cwd: string;
 	hasUI: boolean;
 	mode: "tui" | "rpc" | "json" | "print";
-	isIdle: () => boolean;
 	model: undefined;
 	modelRegistry: unknown;
 	sessionManager: {
 		getSessionId: () => string;
 		getSessionFile: () => string | undefined;
 	};
-	ui: { notify: () => void; setWidget: () => void };
+	isProjectTrusted: () => boolean;
+	ui: {
+		addAutocompleteProvider: (factory: unknown) => void;
+		notify: () => void;
+		setWidget: (key?: string, factory?: unknown) => void;
+	};
 }
 
 class FakeCrew {
 	activated: ActiveRuntimeBinding[] = [];
 	deactivated: string[] = [];
+	adopted: Array<{ previousSessionFile: string; newSessionId: string; activationsBefore: number }> = [];
 	abortCount = 0;
 
-	activateSession(binding: ActiveRuntimeBinding): void {
+	activateSession(binding: ActiveRuntimeBinding, refreshWidget?: () => void): void {
 		this.activated.push(binding);
+		refreshWidget?.();
+	}
+
+	adoptSession(previousSessionFile: string, newSessionId: string): string[] {
+		this.adopted.push({ previousSessionFile, newSessionId, activationsBefore: this.activated.length });
+		return [];
 	}
 
 	deactivateSession(sessionId: string): void {
@@ -39,35 +57,29 @@ class FakeCrew {
 		this.abortCount++;
 	}
 
-	getActiveSummariesForOwner(): [] {
-		return [];
+	summaries: ActiveAgentSummary[] = [];
+
+	getActiveSummariesForOwner(): ActiveAgentSummary[] {
+		return this.summaries;
 	}
 }
 
 class FakeProcessHooks {
-	sigintHandlers: Array<() => void> = [];
 	beforeExitHandlers: Array<() => void> = [];
-	exitCodes: number[] = [];
+	signalEvents: string[] = [];
 
-	once(event: "SIGINT", listener: () => void): void {
-		assert.equal(event, "SIGINT");
-		this.sigintHandlers.push(listener);
+	once(event: string): void {
+		this.signalEvents.push(event);
 	}
 
 	on(event: "beforeExit", listener: () => void): void {
 		assert.equal(event, "beforeExit");
 		this.beforeExitHandlers.push(listener);
 	}
-
-	exit(code?: number): never {
-		this.exitCodes.push(code ?? 0);
-		throw new Error("process exit");
-	}
 }
 
 function setup(setupKey = Symbol("pi-crew-test-hooks")) {
 	const handlers: RegisteredHandlers = {};
-	const shortcuts: Array<{ key: string; description: string }> = [];
 	const crew = new FakeCrew();
 	const processHooks = new FakeProcessHooks();
 	const pi = {
@@ -76,10 +88,10 @@ function setup(setupKey = Symbol("pi-crew-test-hooks")) {
 		},
 		registerTool() {},
 		registerMessageRenderer() {},
-		registerShortcut(key: string, options: { description: string }) {
-			shortcuts.push({ key, description: options.description });
-		},
+		registerEntryRenderer() {},
+		registerShortcut() {},
 		sendMessage() {},
+		appendEntry() {},
 	};
 
 	registerPiCrewExtension(pi as never, {
@@ -89,42 +101,146 @@ function setup(setupKey = Symbol("pi-crew-test-hooks")) {
 		extensionDir: "/pkg/extension",
 	});
 
-	return { crew, handlers, pi, processHooks, shortcuts };
+	return { crew, handlers, pi, processHooks };
 }
 
-function context(sessionId = "owner-1", sessionFile?: string): ExtensionContextStub {
+function context(
+	sessionId = "owner-1",
+	sessionFile?: string,
+	mode: ExtensionContextStub["mode"] = "json",
+): ExtensionContextStub {
 	return {
 		cwd: "/repo",
 		hasUI: false,
-		mode: "json",
-		isIdle: () => true,
+		mode,
 		model: undefined,
 		modelRegistry: {},
 		sessionManager: {
 			getSessionId: () => sessionId,
 			getSessionFile: () => sessionFile,
 		},
-		ui: { notify() {}, setWidget() {} },
+		isProjectTrusted: () => true,
+		ui: {
+			addAutocompleteProvider() {},
+			notify() {},
+			setWidget() {},
+		},
 	};
 }
 
-describe("extension lifecycle wiring", () => {
-	it("registers an unused Pi shortcut for toggling widget details", () => {
-		const { shortcuts } = setup();
+const widgetTheme = {
+	fg: (_color: string, value: string) => value,
+	bold: (value: string) => value,
+} as Theme;
 
-		assert.deepEqual(shortcuts, [{
-			key: "ctrl+shift+e",
-			description: "Toggle subagent widget summary or details",
-		}]);
+function widgetSummary(): ActiveAgentSummary {
+	return {
+		id: "scout-1234",
+		agentName: "scout",
+		brief: "inspect widget",
+		status: "running",
+		inputTokens: 12_400,
+		outputTokens: 1_200,
+		cost: 0.034,
+		model: "model-x",
+		modelName: undefined,
+		thinking: "medium",
+		toolCallCount: 1,
+		toolFailureCount: 0,
+		toolActivities: [{ id: "tool-1", name: "read", target: "README.md", status: "done", resultSummary: "33 lines" }],
+		workedMs: 0,
+	};
+}
+
+function tuiHostContext(cwd: string, widgets: Array<{ render(width: number): string[] }>): ExtensionContextStub {
+	const ctx = context("owner-widget", undefined, "tui");
+	ctx.cwd = cwd;
+	ctx.ui.setWidget = (_key?: string, factory?: unknown) => {
+		if (!factory) return;
+		const build = factory as (tui: unknown, theme: Theme) => { render(width: number): string[] };
+		widgets.push(build({ requestRender() {} }, widgetTheme));
+	};
+	return ctx;
+}
+
+describe("extension lifecycle wiring", () => {
+	it("registers mention autocomplete only for TUI sessions", () => {
+		const { handlers } = setup();
+		let registrations = 0;
+		const tuiContext = context("owner-tui", undefined, "tui");
+		tuiContext.ui.addAutocompleteProvider = () => { registrations++; };
+
+		handlers.session_start?.({}, tuiContext);
+		handlers.session_start?.({}, context("owner-json"));
+
+		assert.equal(registrations, 1);
 	});
 
-	it("activates sessions with getSessionId ownership", () => {
+	it("expands mentions through the context hook without changing stored messages", () => {
+		const { handlers } = setup();
+		const messages: AgentMessage[] = [{ role: "user", content: "Ask @crew:scout to inspect", timestamp: 1 }];
+
+		const result = handlers.context?.({ messages }, context()) as { messages: Array<{ content: string }> };
+
+		const stored = messages[0];
+		assert.ok(stored?.role === "user");
+		assert.equal(stored.content, "Ask @crew:scout to inspect");
+		assert.equal(result.messages[0]?.content, 'Ask <pi-crew subagent="scout" /> to inspect');
+	});
+
+	it("activates sessions with getSessionId ownership and both delivery bindings", () => {
 		const { crew, handlers } = setup();
 
-		handlers.session_start?.({}, context("owner-1", undefined));
+		handlers.session_start?.({}, context("owner-1", "/sessions/owner-1.jsonl"));
 
 		assert.equal(crew.activated.length, 1);
 		assert.equal(crew.activated[0]?.sessionId, "owner-1");
+		assert.equal(crew.activated[0]?.sessionFile, "/sessions/owner-1.jsonl");
+		assert.equal(typeof crew.activated[0]?.sendMessage, "function");
+		assert.equal(typeof crew.activated[0]?.appendEntry, "function");
+	});
+
+	it("adopts the previous session's subagents on fork before activating, and only on fork", () => {
+		const { crew, handlers } = setup();
+
+		handlers.session_start?.(
+			{ reason: "fork", previousSessionFile: "/sessions/owner-1.jsonl" },
+			context("owner-2", "/sessions/owner-2.jsonl"),
+		);
+
+		assert.deepEqual(crew.adopted, [{
+			previousSessionFile: "/sessions/owner-1.jsonl",
+			newSessionId: "owner-2",
+			activationsBefore: 0,
+		}]);
+		assert.equal(crew.activated.length, 1);
+
+		handlers.session_start?.(
+			{ reason: "resume", previousSessionFile: "/sessions/owner-2.jsonl" },
+			context("owner-3", "/sessions/owner-3.jsonl"),
+		);
+
+		assert.equal(crew.adopted.length, 1);
+		assert.equal(crew.activated.length, 2);
+	});
+
+	it("loads widget.showToolCalls from session config into the widget", () => {
+		const cwd = mkdtempSync(join(tmpdir(), "pi-crew-index-widget-"));
+		mkdirSync(join(cwd, ".pi"), { recursive: true });
+		writeFileSync(join(cwd, ".pi", "pi-crew.json"), JSON.stringify({ widget: { showToolCalls: false } }));
+
+		initTheme("dark", false);
+		const { crew, handlers } = setup();
+		crew.summaries = [widgetSummary()];
+		const widgets: Array<{ render(width: number): string[] }> = [];
+
+		handlers.session_start?.({}, tuiHostContext(cwd, widgets));
+
+		assert.equal(widgets.length, 1);
+		const output = stripVTControlCharacters(widgets[0]!.render(200).join("\n"));
+		assert.match(output, /scout-1234 - inspect widget/);
+		assert.doesNotMatch(output, /read/);
+		assert.doesNotMatch(output, /ctrl\+shift\+e/);
 	});
 
 	it("deactivates sessions for every shutdown reason", () => {
@@ -150,25 +266,11 @@ describe("extension lifecycle wiring", () => {
 		assert.equal(crew.abortCount, 1);
 	});
 
-	it("registers process cleanup hooks once per setup key", () => {
-		const setupKey = Symbol("shared-test-hooks");
-		const first = setup(setupKey);
-		const second = setup(setupKey);
-
-		assert.equal(first.processHooks.sigintHandlers.length, 1);
-		assert.equal(first.processHooks.beforeExitHandlers.length, 1);
-		assert.equal(second.processHooks.sigintHandlers.length, 0);
-		assert.equal(second.processHooks.beforeExitHandlers.length, 0);
-	});
-
-	it("process cleanup aborts subagents on beforeExit and SIGINT", () => {
+	it("process cleanup aborts subagents on beforeExit without taking over signals", () => {
 		const { crew, processHooks } = setup();
 
 		processHooks.beforeExitHandlers[0]?.();
 		assert.equal(crew.abortCount, 1);
-
-		assert.throws(() => processHooks.sigintHandlers[0]?.(), /process exit/);
-		assert.equal(crew.abortCount, 2);
-		assert.deepEqual(processHooks.exitCodes, [130]);
+		assert.deepEqual(processHooks.signalEvents, []);
 	});
 });

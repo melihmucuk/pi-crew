@@ -1,13 +1,14 @@
 {
   "name": "@melihmucuk/pi-crew",
-  "version": "1.0.32",
+  "version": "1.0.33",
   "type": "module",
   "description": "Non-blocking subagent orchestration for pi coding agent",
   "files": [
     "extension/",
     "agents/",
     "skills/",
-    "prompts/"
+    "prompts/",
+    "docs/"
   ],
   "author": "Melih Mucuk",
   "license": "MIT",

@@ -3,8 +3,20 @@ import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import * as piCodingAgent from "@earendil-works/pi-coding-agent";
+import { parseModelId } from "./format.js";
 
 const PROJECT_CONFIG_DIR_NAME = piCodingAgent.CONFIG_DIR_NAME ?? ".pi";
+
+export const BUILT_IN_TOOL_NAMES: readonly string[] = Object.freeze([
+	"read",
+	"bash",
+	"powershell",
+	"edit",
+	"write",
+	"grep",
+	"find",
+	"ls",
+]);
 
 export interface ParsedModel {
 	provider: string;
@@ -18,7 +30,6 @@ interface AgentConfigFields {
 	tools?: string[];
 	skills?: string[];
 	compaction?: boolean;
-	interactive?: boolean;
 }
 
 export interface AgentConfig extends AgentConfigFields {
@@ -33,10 +44,18 @@ export interface AgentDiscoveryWarning {
 	message: string;
 }
 
+export interface CrewWidgetConfig {
+	showToolCalls: boolean;
+}
+
 export interface AgentDiscoveryResult {
 	agents: AgentConfig[];
 	warnings: AgentDiscoveryWarning[];
+	widget: CrewWidgetConfig;
 }
+
+const DEFAULT_WIDGET_CONFIG: CrewWidgetConfig = { showToolCalls: true };
+type WidgetConfigOverride = Partial<CrewWidgetConfig>;
 
 export interface AgentDefinitionFile {
 	filePath: string;
@@ -56,30 +75,34 @@ export interface AgentConfigFile {
 	warnings?: AgentDiscoveryWarning[];
 }
 
-export interface AgentCatalogSource {
-	loadAgentDefinitionGroups(cwd: string): AgentDefinitionSourceGroup[];
-	loadConfigFiles(cwd: string): AgentConfigFile[];
+export interface AgentDiscoveryOptions {
+	projectTrusted: boolean;
 }
 
-type AgentConfigOverride = AgentConfigFields;
-type ParsedFieldName = "model" | "thinking" | "tools" | "skills" | "compaction" | "interactive";
+export interface AgentCatalogSource {
+	loadAgentDefinitionGroups(cwd: string, options: AgentDiscoveryOptions): AgentDefinitionSourceGroup[];
+	loadConfigFiles(cwd: string, options: AgentDiscoveryOptions): AgentConfigFile[];
+}
+
+type ToolsDelta = Array<{ action: "add" | "remove"; name: string }>;
+
+type ToolOperation = ToolsDelta[number] | { action: "reset"; tools: string[] };
+type AgentConfigOverride = Omit<AgentConfigFields, "tools"> & { toolOperations?: ToolOperation[] };
+type ParsedFieldName = "model" | "thinking" | "tools" | "skills" | "compaction";
 type ParsedListFieldName = "tools" | "skills";
-type ParsedBooleanFieldName = "compaction" | "interactive";
+type ParsedBooleanFieldName = "compaction";
 type WarningSubject = "subagent" | "subagent override";
 
 type ParsedFieldWarning =
 	| { code: "invalid-list-format"; fieldName: ParsedListFieldName }
+	| { code: "mixed-tools-delta" }
 	| { code: "invalid-type"; fieldName: ParsedFieldName; expected: "string" | "boolean" }
 	| { code: "invalid-model-format"; model: string }
 	| { code: "invalid-thinking-level"; thinking: string };
 
 interface ParsedFieldSet extends AgentConfigFields {
+	toolsDelta?: ToolsDelta;
 	warnings: ParsedFieldWarning[];
-}
-
-interface ParseFieldOptions {
-	warnOnInvalidType: boolean;
-	setValueOnInvalidType: boolean;
 }
 
 interface ParseResult {
@@ -90,6 +113,7 @@ interface ParseResult {
 interface ConfigParseResult {
 	overrides: Record<string, AgentConfigOverride>;
 	overrideSources: Record<string, string>;
+	widget: WidgetConfigOverride;
 	warnings: AgentDiscoveryWarning[];
 }
 
@@ -109,7 +133,6 @@ const ALLOWED_OVERRIDE_FIELDS = new Set([
 	"tools",
 	"skills",
 	"compaction",
-	"interactive",
 ]);
 
 function createDiscoveryWarning(filePath: string, message: string): AgentDiscoveryWarning {
@@ -132,9 +155,11 @@ function formatFieldWarning(subject: WarningSubject, name: string, warning: Pars
 		case "invalid-type":
 			return `${prefix}: field "${warning.fieldName}" must be a ${warning.expected}, ignoring`;
 		case "invalid-model-format":
-			return `${prefix}: invalid model format "${warning.model}" (expected "provider/model-id"), ignoring model field`;
+			return `${prefix}: invalid model format "${warning.model}" (expected "provider/model-id"); spawning this subagent will fail until it is fixed`;
 		case "invalid-thinking-level":
 			return `${prefix}: invalid thinking level "${warning.thinking}", ignoring`;
+		case "mixed-tools-delta":
+			return `${prefix}: tools field mixes "+"/"-" entries with plain names, ignoring tools field`;
 	}
 }
 
@@ -154,94 +179,96 @@ function parseListField(value: unknown, fieldName: ParsedListFieldName): { value
 	return { values: [], warnings: [{ code: "invalid-list-format", fieldName }] };
 }
 
-function parseModel(value: unknown): ParsedModel | null {
-	if (typeof value !== "string" || !value.includes("/")) return null;
-	const slashIndex = value.indexOf("/");
-	const provider = value.slice(0, slashIndex).trim();
-	const modelId = value.slice(slashIndex + 1).trim();
-	return provider && modelId ? { provider, modelId } : null;
-}
-
 function validateThinkingLevel(value: string | undefined): ThinkingLevel | undefined {
 	if (!value) return undefined;
 	return VALID_THINKING_LEVELS.includes(value) ? value as ThinkingLevel : undefined;
 }
 
-function parseModelField(value: unknown, options: ParseFieldOptions): Pick<ParsedFieldSet, "model" | "parsedModel" | "warnings"> {
+/** A malformed model keeps its raw value so the spawn fails loudly instead of falling back to another model. */
+function parseModelField(value: unknown): Pick<ParsedFieldSet, "model" | "parsedModel" | "warnings"> {
 	if (typeof value === "string") {
-		const parsedModel = parseModel(value);
+		const parsedModel = parseModelId(value);
 		if (!parsedModel) {
-			return {
-				...(options.setValueOnInvalidType ? { model: value } : {}),
-				warnings: [{ code: "invalid-model-format", model: value }],
-			};
+			return { model: value, parsedModel: undefined, warnings: [{ code: "invalid-model-format", model: value }] };
 		}
 		return { model: value, parsedModel, warnings: [] };
 	}
-	if (value !== undefined && options.warnOnInvalidType) {
+	if (value !== undefined) {
 		return { warnings: [{ code: "invalid-type", fieldName: "model", expected: "string" }] };
 	}
 	return { warnings: [] };
 }
 
-function parseThinkingField(value: unknown, options: ParseFieldOptions): Pick<ParsedFieldSet, "thinking" | "warnings"> {
+function parseThinkingField(value: unknown): Pick<ParsedFieldSet, "thinking" | "warnings"> {
 	if (typeof value === "string") {
 		const thinking = validateThinkingLevel(value);
 		return thinking ? { thinking, warnings: [] } : { warnings: [{ code: "invalid-thinking-level", thinking: value }] };
 	}
-	if (value !== undefined && options.warnOnInvalidType) {
+	if (value !== undefined) {
 		return { warnings: [{ code: "invalid-type", fieldName: "thinking", expected: "string" }] };
 	}
 	return { warnings: [] };
 }
 
-function parseToolsField(value: unknown, options: ParseFieldOptions): Pick<ParsedFieldSet, "tools" | "warnings"> {
-	const parsedTools = parseListField(value, "tools");
-	if (parsedTools.warnings.length > 0 && !options.setValueOnInvalidType) return { warnings: parsedTools.warnings };
-	return { tools: parsedTools.values, warnings: parsedTools.warnings };
+function isDeltaEntry(entry: string): boolean {
+	return entry.startsWith("+") || entry.startsWith("-");
 }
 
-function parseSkillsField(value: unknown, options: ParseFieldOptions): Pick<ParsedFieldSet, "skills" | "warnings"> {
+function parseToolsField(value: unknown): Pick<ParsedFieldSet, "tools" | "toolsDelta" | "warnings"> {
+	const parsedTools = parseListField(value, "tools");
+	if (parsedTools.warnings.length > 0) return { warnings: parsedTools.warnings };
+
+	const deltaCount = parsedTools.values.filter(isDeltaEntry).length;
+	if (deltaCount === 0) return { tools: parsedTools.values, warnings: [] };
+	if (deltaCount !== parsedTools.values.length) return { warnings: [{ code: "mixed-tools-delta" }] };
+
+	const toolsDelta: ToolsDelta = [];
+	for (const entry of parsedTools.values) {
+		const name = entry.slice(1).trim();
+		if (!name) continue;
+		toolsDelta.push({ action: entry.startsWith("+") ? "add" : "remove", name });
+	}
+	return { toolsDelta, warnings: [] };
+}
+
+function parseSkillsField(value: unknown): Pick<ParsedFieldSet, "skills" | "warnings"> {
 	const parsedSkills = parseListField(value, "skills");
-	if (parsedSkills.warnings.length > 0 && !options.setValueOnInvalidType) return { warnings: parsedSkills.warnings };
-	return { skills: parsedSkills.values, warnings: parsedSkills.warnings };
+	if (parsedSkills.warnings.length > 0) return { warnings: parsedSkills.warnings };
+	return { skills: parsedSkills.values, warnings: [] };
 }
 
 function parseBooleanField(
 	fieldName: ParsedBooleanFieldName,
 	value: unknown,
-	options: ParseFieldOptions,
 ): Pick<ParsedFieldSet, ParsedBooleanFieldName | "warnings"> {
 	if (typeof value === "boolean") return { [fieldName]: value, warnings: [] };
-	if (value !== undefined && options.warnOnInvalidType) {
+	if (value !== undefined) {
 		return { warnings: [{ code: "invalid-type", fieldName, expected: "boolean" }] };
 	}
 	return { warnings: [] };
 }
 
-function parseSharedFields(record: Record<string, unknown>, options: ParseFieldOptions): ParsedFieldSet {
-	const model = parseModelField(record.model, options);
-	const thinking = parseThinkingField(record.thinking, options);
-	const tools = Object.prototype.hasOwnProperty.call(record, "tools") ? parseToolsField(record.tools, options) : { warnings: [] };
-	const skills = Object.prototype.hasOwnProperty.call(record, "skills") ? parseSkillsField(record.skills, options) : { warnings: [] };
-	const compaction = parseBooleanField("compaction", record.compaction, options);
-	const interactive = parseBooleanField("interactive", record.interactive, options);
+function parseSharedFields(record: Record<string, unknown>): ParsedFieldSet {
+	const model = parseModelField(record.model);
+	const thinking = parseThinkingField(record.thinking);
+	const tools = Object.prototype.hasOwnProperty.call(record, "tools") ? parseToolsField(record.tools) : { warnings: [] };
+	const skills = Object.prototype.hasOwnProperty.call(record, "skills") ? parseSkillsField(record.skills) : { warnings: [] };
+	const compaction = parseBooleanField("compaction", record.compaction);
 
 	return {
 		...("model" in model ? { model: model.model } : {}),
 		...("parsedModel" in model ? { parsedModel: model.parsedModel } : {}),
 		...(thinking.thinking !== undefined ? { thinking: thinking.thinking } : {}),
 		...(tools.tools !== undefined ? { tools: tools.tools } : {}),
+		...(tools.toolsDelta !== undefined ? { toolsDelta: tools.toolsDelta } : {}),
 		...(skills.skills !== undefined ? { skills: skills.skills } : {}),
 		...(compaction.compaction !== undefined ? { compaction: compaction.compaction } : {}),
-		...(interactive.interactive !== undefined ? { interactive: interactive.interactive } : {}),
 		warnings: [
 			...model.warnings,
 			...thinking.warnings,
 			...tools.warnings,
 			...skills.warnings,
 			...compaction.warnings,
-			...interactive.warnings,
 		],
 	};
 }
@@ -251,16 +278,21 @@ function parseDefinitionFields(
 	filePath: string,
 	agentName: string,
 ): { fields: AgentConfigFields; warnings: AgentDiscoveryWarning[] } {
-	const parsed = parseSharedFields(record, { warnOnInvalidType: false, setValueOnInvalidType: true });
-	const { warnings, ...fields } = parsed;
-	return { fields, warnings: toParseWarnings(filePath, "subagent", agentName, warnings) };
+	const { warnings, toolsDelta, ...fields } = parseSharedFields(record);
+	return {
+		fields: {
+			...fields,
+			...(toolsDelta !== undefined ? { tools: applyToolOperations(BUILT_IN_TOOL_NAMES, toolsDelta) } : {}),
+		},
+		warnings: toParseWarnings(filePath, "subagent", agentName, warnings),
+	};
 }
 
 function parseOverrideFields(
 	record: Record<string, unknown>,
 	filePath: string,
 	agentName: string,
-): { fields: AgentConfigFields; warnings: AgentDiscoveryWarning[] } {
+): { fields: AgentConfigOverride; warnings: AgentDiscoveryWarning[] } {
 	const warnings: AgentDiscoveryWarning[] = [];
 	for (const fieldName of Object.keys(record)) {
 		if (fieldName === "name" || fieldName === "description") {
@@ -272,10 +304,12 @@ function parseOverrideFields(
 		}
 	}
 
-	const parsed = parseSharedFields(record, { warnOnInvalidType: true, setValueOnInvalidType: false });
-	const { warnings: fieldWarnings, ...fields } = parsed;
+	const { warnings: fieldWarnings, tools, toolsDelta, ...rest } = parseSharedFields(record);
+	const toolOperations: ToolOperation[] | undefined = tools !== undefined
+		? [{ action: "reset", tools }]
+		: toolsDelta;
 	warnings.push(...toParseWarnings(filePath, "subagent override", agentName, fieldWarnings));
-	return { fields, warnings };
+	return { fields: { ...rest, ...(toolOperations !== undefined ? { toolOperations } : {}) }, warnings };
 }
 
 function parseAgentDefinition(content: string, filePath: string): ParseResult {
@@ -318,40 +352,61 @@ function parseAgentOverride(
 	return { override: parsedFields.fields, warnings: parsedFields.warnings };
 }
 
+function parseWidgetConfig(value: unknown, filePath: string): { config: WidgetConfigOverride; warnings: AgentDiscoveryWarning[] } {
+	if (value === undefined) return { config: {}, warnings: [] };
+	if (!value || typeof value !== "object" || Array.isArray(value)) {
+		return { config: {}, warnings: [createDiscoveryWarning(filePath, 'Widget: field "widget" must be a JSON object, ignoring')] };
+	}
+
+	const record = value as Record<string, unknown>;
+	const config: WidgetConfigOverride = {};
+	const warnings: AgentDiscoveryWarning[] = [];
+	if (record.showToolCalls !== undefined) {
+		if (typeof record.showToolCalls === "boolean") config.showToolCalls = record.showToolCalls;
+		else warnings.push(createDiscoveryWarning(filePath, 'Widget: field "showToolCalls" must be a boolean, ignoring'));
+	}
+	return { config, warnings };
+}
+
 function parseConfigFile(content: string, filePath: string): ConfigParseResult {
 	let parsed: unknown;
 	try {
 		parsed = JSON.parse(content);
 	} catch (error) {
 		const reason = error instanceof Error ? error.message : String(error);
-		return { overrides: {}, overrideSources: {}, warnings: [createDiscoveryWarning(filePath, `Ignored pi-crew config. JSON could not be parsed: ${reason}`)] };
+		return { overrides: {}, overrideSources: {}, widget: {}, warnings: [createDiscoveryWarning(filePath, `Ignored pi-crew config. JSON could not be parsed: ${reason}`)] };
 	}
 	if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-		return { overrides: {}, overrideSources: {}, warnings: [createDiscoveryWarning(filePath, "Ignored pi-crew config. Root value must be a JSON object.")] };
+		return { overrides: {}, overrideSources: {}, widget: {}, warnings: [createDiscoveryWarning(filePath, "Ignored pi-crew config. Root value must be a JSON object.")] };
 	}
 
 	const root = parsed as Record<string, unknown>;
-	if (root.agents === undefined) return { overrides: {}, overrideSources: {}, warnings: [] };
-	if (!root.agents || typeof root.agents !== "object" || Array.isArray(root.agents)) {
-		return { overrides: {}, overrideSources: {}, warnings: [createDiscoveryWarning(filePath, 'Ignored pi-crew config. Field "agents" must be a JSON object.')] };
-	}
-
 	const overrides: Record<string, AgentConfigOverride> = {};
 	const overrideSources: Record<string, string> = {};
 	const warnings: AgentDiscoveryWarning[] = [];
-	for (const [agentName, value] of Object.entries(root.agents)) {
-		if (!agentName.trim()) {
-			warnings.push(createDiscoveryWarning(filePath, "Ignored pi-crew config entry with empty subagent name."));
-			continue;
-		}
-		const parsedOverride = parseAgentOverride(agentName, value, filePath);
-		warnings.push(...parsedOverride.warnings);
-		if (parsedOverride.override) {
-			overrides[agentName] = parsedOverride.override;
-			overrideSources[agentName] = filePath;
+
+	if (root.agents !== undefined) {
+		if (!root.agents || typeof root.agents !== "object" || Array.isArray(root.agents)) {
+			warnings.push(createDiscoveryWarning(filePath, 'Ignored pi-crew config. Field "agents" must be a JSON object.'));
+		} else {
+			for (const [agentName, value] of Object.entries(root.agents)) {
+				if (!agentName.trim()) {
+					warnings.push(createDiscoveryWarning(filePath, "Ignored pi-crew config entry with empty subagent name."));
+					continue;
+				}
+				const parsedOverride = parseAgentOverride(agentName, value, filePath);
+				warnings.push(...parsedOverride.warnings);
+				if (parsedOverride.override) {
+					overrides[agentName] = parsedOverride.override;
+					overrideSources[agentName] = filePath;
+				}
+			}
 		}
 	}
-	return { overrides, overrideSources, warnings };
+
+	const widgetConfig = parseWidgetConfig(root.widget, filePath);
+	warnings.push(...widgetConfig.warnings);
+	return { overrides, overrideSources, widget: widgetConfig.config, warnings };
 }
 
 function mergeConfigOverrides(
@@ -360,9 +415,26 @@ function mergeConfigOverrides(
 ): Record<string, AgentConfigOverride> {
 	const merged: Record<string, AgentConfigOverride> = { ...base };
 	for (const [agentName, agentOverride] of Object.entries(override)) {
-		merged[agentName] = { ...(merged[agentName] ?? {}), ...agentOverride };
+		const previous = merged[agentName];
+		merged[agentName] = {
+			...previous,
+			...agentOverride,
+			...(agentOverride.toolOperations !== undefined
+				? { toolOperations: [...(previous?.toolOperations ?? []), ...agentOverride.toolOperations] }
+				: {}),
+		};
 	}
 	return merged;
+}
+
+function applyToolOperations(base: readonly string[], operations: ToolOperation[]): string[] {
+	let tools = [...base];
+	for (const operation of operations) {
+		if (operation.action === "reset") tools = [...operation.tools];
+		else if (operation.action === "remove") tools = tools.filter((tool) => tool !== operation.name);
+		else if (!tools.includes(operation.name)) tools.push(operation.name);
+	}
+	return tools;
 }
 
 function applyAgentOverride(agent: AgentConfig, override: AgentConfigOverride): AgentConfig {
@@ -370,10 +442,11 @@ function applyAgentOverride(agent: AgentConfig, override: AgentConfigOverride): 
 		...agent,
 		...(override.model !== undefined ? { model: override.model, parsedModel: override.parsedModel } : {}),
 		...(override.thinking !== undefined ? { thinking: override.thinking } : {}),
-		...(override.tools !== undefined ? { tools: override.tools } : {}),
+		...(override.toolOperations !== undefined
+			? { tools: applyToolOperations(agent.tools ?? BUILT_IN_TOOL_NAMES, override.toolOperations) }
+			: {}),
 		...(override.skills !== undefined ? { skills: override.skills } : {}),
 		...(override.compaction !== undefined ? { compaction: override.compaction } : {}),
-		...(override.interactive !== undefined ? { interactive: override.interactive } : {}),
 	};
 }
 
@@ -386,6 +459,7 @@ function loadAgentDefinitionFromFile(file: AgentDefinitionFile): ParseResult {
 function mergeConfigFiles(configFiles: AgentConfigFile[]): ConfigParseResult {
 	let overrides: Record<string, AgentConfigOverride> = {};
 	let overrideSources: Record<string, string> = {};
+	let widget: WidgetConfigOverride = {};
 	const warnings: AgentDiscoveryWarning[] = [];
 
 	for (const configFile of configFiles) {
@@ -394,25 +468,26 @@ function mergeConfigFiles(configFiles: AgentConfigFile[]): ConfigParseResult {
 		const parsed = parseConfigFile(configFile.content, configFile.filePath);
 		overrides = mergeConfigOverrides(overrides, parsed.overrides);
 		overrideSources = { ...overrideSources, ...parsed.overrideSources };
+		widget = { ...widget, ...parsed.widget };
 		warnings.push(...parsed.warnings);
 	}
 
-	return { overrides, overrideSources, warnings };
+	return { overrides, overrideSources, widget, warnings };
 }
 
 export class AgentCatalog {
 	constructor(private readonly source: AgentCatalogSource) {}
 
-	discover(cwd: string = process.cwd()): AgentDiscoveryResult {
+	discover(cwd: string, options: AgentDiscoveryOptions): AgentDiscoveryResult {
 		const agents: AgentConfig[] = [];
 		const warnings: AgentDiscoveryWarning[] = [];
 		const seenNames = new Map<string, string>();
 
-		for (const group of this.source.loadAgentDefinitionGroups(cwd)) {
+		for (const group of this.source.loadAgentDefinitionGroups(cwd, options)) {
 			this.loadAgentsFromGroup(group, seenNames, agents, warnings);
 		}
 
-		const configOverrides = mergeConfigFiles(this.source.loadConfigFiles(cwd));
+		const configOverrides = mergeConfigFiles(this.source.loadConfigFiles(cwd, options));
 		warnings.push(...configOverrides.warnings);
 
 		const finalAgents = agents.map((agent) => {
@@ -429,7 +504,7 @@ export class AgentCatalog {
 			}
 		}
 
-		return { agents: finalAgents, warnings };
+		return { agents: finalAgents, warnings, widget: { ...DEFAULT_WIDGET_CONFIG, ...configOverrides.widget } };
 	}
 
 	private loadAgentsFromGroup(
@@ -502,20 +577,46 @@ function loadConfigFile(filePath: string): AgentConfigFile | null {
 
 const bundledAgentsDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "agents");
 
+const UNTRUSTED_PROJECT_WARNING = "Project subagent resources were not loaded because the project is not trusted.";
+
+function projectAgentsDirPath(cwd: string): string {
+	return path.join(cwd, PROJECT_CONFIG_DIR_NAME, "agents");
+}
+
+function projectConfigPath(cwd: string): string {
+	return path.join(cwd, PROJECT_CONFIG_DIR_NAME, "pi-crew.json");
+}
+
 class FilesystemAgentCatalogSource implements AgentCatalogSource {
-	loadAgentDefinitionGroups(cwd: string): AgentDefinitionSourceGroup[] {
-		return [path.join(cwd, PROJECT_CONFIG_DIR_NAME, "agents"), path.join(piCodingAgent.getAgentDir(), "agents"), bundledAgentsDir]
+	loadAgentDefinitionGroups(cwd: string, options: AgentDiscoveryOptions): AgentDefinitionSourceGroup[] {
+		const agentsDirs = [path.join(piCodingAgent.getAgentDir(), "agents"), bundledAgentsDir];
+		if (options.projectTrusted) agentsDirs.unshift(projectAgentsDirPath(cwd));
+
+		const groups = agentsDirs
 			.map(loadAgentDefinitionGroup)
 			.filter((group): group is AgentDefinitionSourceGroup => group !== null);
+
+		const untrustedWarning = options.projectTrusted ? null : this.untrustedProjectGroup(cwd);
+		return untrustedWarning ? [untrustedWarning, ...groups] : groups;
 	}
 
-	loadConfigFiles(cwd: string): AgentConfigFile[] {
-		return [path.join(piCodingAgent.getAgentDir(), "pi-crew.json"), path.join(cwd, PROJECT_CONFIG_DIR_NAME, "pi-crew.json")]
+	loadConfigFiles(cwd: string, options: AgentDiscoveryOptions): AgentConfigFile[] {
+		const configPaths = [path.join(piCodingAgent.getAgentDir(), "pi-crew.json")];
+		if (options.projectTrusted) configPaths.push(projectConfigPath(cwd));
+		return configPaths
 			.map(loadConfigFile)
 			.filter((file): file is AgentConfigFile => file !== null);
 	}
+
+	/** One warning covers both skipped project sources, so it is reported with the definition groups. */
+	private untrustedProjectGroup(cwd: string): AgentDefinitionSourceGroup | null {
+		const agentsDir = projectAgentsDirPath(cwd);
+		const skippedPath = [agentsDir, projectConfigPath(cwd)].find((candidate) => fs.existsSync(candidate));
+		if (!skippedPath) return null;
+		return { agentsDir, files: [], warnings: [createDiscoveryWarning(skippedPath, UNTRUSTED_PROJECT_WARNING)] };
+	}
 }
 
-export function discoverAgents(cwd: string = process.cwd()): AgentDiscoveryResult {
-	return new AgentCatalog(new FilesystemAgentCatalogSource()).discover(cwd);
+export function discoverAgents(cwd: string, options: AgentDiscoveryOptions): AgentDiscoveryResult {
+	return new AgentCatalog(new FilesystemAgentCatalogSource()).discover(cwd, options);
 }

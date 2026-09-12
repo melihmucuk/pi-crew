@@ -16,17 +16,18 @@ import type {
   ActiveAgentSummary,
   CrewRuntime,
 } from "./crew.js";
+import { formatDuration, formatModelLabel, parseModelId } from "./format.js";
 import {
   CrewTaskSchema,
   type CrewTask,
   formatCrewTask,
   validateCrewTask,
 } from "./task.js";
+import { sanitizeInline } from "./tool-activity.js";
 import {
-  STATUS_ICON,
+  getSubagentStatusPresentation,
   renderCrewCall,
   renderCrewResult,
-  sendCrewListActiveWarning,
 } from "./ui.js";
 
 export type CrewToolResult = AgentToolResult<unknown>;
@@ -39,12 +40,14 @@ type ToolRenderCall = Exclude<RegisteredTool["renderCall"], undefined>;
 interface ToolContext {
   cwd: string;
   callerSessionId: string;
+  projectTrusted: boolean;
 }
 
 function getToolContext(ctx: ExtensionContext): ToolContext {
   return {
     cwd: ctx.cwd,
     callerSessionId: ctx.sessionManager.getSessionId(),
+    projectTrusted: ctx.isProjectTrusted(),
   };
 }
 
@@ -60,7 +63,7 @@ function toolSuccess(
   };
 }
 
-function formatAvailableAgents(agents: AgentConfig[]): string[] {
+function formatAvailableAgents(agents: AgentConfig[], ctx: ExtensionContext): string[] {
   if (agents.length === 0) {
     return [
       `No valid subagent definitions found. Add \`.md\` files to \`<cwd>/${PROJECT_CONFIG_DIR_NAME}/agents/\` or \`${piCodingAgent.getAgentDir()}/agents/\`.`,
@@ -68,27 +71,14 @@ function formatAvailableAgents(agents: AgentConfig[]): string[] {
   }
 
   return agents.flatMap((agent) => {
-    const tools =
-      agent.tools === undefined
-        ? "all built-in"
-        : agent.tools.length === 0
-          ? "none"
-          : agent.tools.join(", ");
-    const skills =
-      agent.skills === undefined
-        ? "all built-in"
-        : agent.skills.length === 0
-          ? "none"
-          : agent.skills.join(", ");
+    const parsed = parseModelId(agent.model);
+    const resolvedName = parsed ? ctx.modelRegistry.find(parsed.provider, parsed.modelId)?.name : undefined;
     return [
       "",
       `name: ${agent.name}`,
       `description: ${agent.description}`,
-      `model: ${agent.model ?? "owner session model"}`,
+      `model: ${formatModelLabel(agent.model, resolvedName) ?? "owner session model"}`,
       `thinking: ${agent.thinking ?? "model default"}`,
-      `interactive: ${agent.interactive ? "true" : "false"}`,
-      `tools: ${tools}`,
-      `skills: ${skills}`,
     ];
   });
 }
@@ -102,16 +92,17 @@ function formatWarnings(warnings: AgentDiscoveryWarning[]): string[] {
   ];
 }
 
-function formatActiveAgents(running: ActiveAgentSummary[]): string[] {
-  if (running.length === 0) return ["No subagents currently active."];
-  return running.flatMap((agent) => {
-    const icon = STATUS_ICON[agent.status] ?? "❓";
+function formatActiveAgents(active: ActiveAgentSummary[]): string[] {
+  if (active.length === 0) return ["No subagents currently active."];
+  return active.flatMap((agent) => {
     return [
       "",
       `id: ${agent.id}`,
       `name: ${agent.agentName}`,
-      `status: ${icon} ${agent.status}`,
-      `model: ${agent.model ?? "resolving"}`,
+      ...(agent.brief ? [`brief: ${sanitizeInline(agent.brief)}`] : []),
+      `status: ${getSubagentStatusPresentation(agent.status).label}`,
+      `model: ${formatModelLabel(agent.model, agent.modelName) ?? "resolving"}`,
+      `worked: ${formatDuration(agent.workedMs)}`,
     ];
   });
 }
@@ -145,15 +136,6 @@ function notifyDiscoveryWarnings(
     shownDiscoveryWarnings.add(key);
     ctx.ui.notify(`${warning.message} (${warning.filePath})`, "error");
   }
-}
-
-function showActiveListWarning(pi: ExtensionAPI, ctx: ExtensionContext): void {
-  Promise.resolve().then(() => {
-    sendCrewListActiveWarning(pi.sendMessage.bind(pi), {
-      isIdle: ctx.isIdle(),
-      triggerTurn: true,
-    });
-  });
 }
 
 function registerActionTool<Params extends object>(
@@ -203,18 +185,25 @@ export function registerCrewTools(
     ],
     async execute(_toolCallId, _params, _signal, _onUpdate, ctx) {
       const toolCtx = getToolContext(ctx);
-      const { agents, warnings } = discoverAgents(toolCtx.cwd);
-      const running = crew.getActiveSummariesForOwner(toolCtx.callerSessionId);
+      const { agents, warnings } = discoverAgents(toolCtx.cwd, {
+        projectTrusted: toolCtx.projectTrusted,
+      });
+      const active = crew.getActiveSummariesForOwner(toolCtx.callerSessionId);
       const lines = [
         "## Available Subagents",
-        ...formatAvailableAgents(agents),
+        ...formatAvailableAgents(agents, ctx),
         ...formatWarnings(warnings),
         "",
         "## Active Subagents",
-        ...formatActiveAgents(running),
+        ...formatActiveAgents(active),
       ];
       notifyDiscoveryWarnings(ctx, shownDiscoveryWarnings, warnings);
-      if (running.length > 0) showActiveListWarning(pi, ctx);
+      if (active.length > 0) {
+        lines.push(
+          "",
+          "⚠ Active subagents detected. Do not poll crew_list; results arrive automatically.",
+        );
+      }
       return {
         content: [{ type: "text", text: lines.join("\n") }],
         details: {},
@@ -237,13 +226,14 @@ export function registerCrewTools(
       subagent: Type.String({ description: "Subagent name from crew_list" }),
       brief: Type.String({
         description:
-          "Concise task label for session lists, ideally under 80 characters. This is not the full task.",
+          "Label under 80 characters for lists. Not the task.",
       }),
       task: CrewTaskSchema,
     }, { additionalProperties: false }),
     promptSnippet: "Spawn a subagent for delegated work.",
     promptGuidelines: [
-      "crew_spawn: Never duplicate delegated work; continue only with independent scope, otherwise end the turn—results arrive asynchronously, so do not sleep or poll.",
+      "crew_spawn: An inline <pi-crew .../> reference identifies the user's selected subagent; it does not require spawning. Delegate only when the sentence's intent asks for delegation.",
+      "crew_spawn: Spawn independent parts in parallel in one turn. Never duplicate delegated work; continue only with independent scope, otherwise end the turn and let results arrive.",
     ],
     action: (params, ctx) => {
       const brief = params.brief.trim();
@@ -251,7 +241,9 @@ export function registerCrewTools(
       validateCrewTask(params.task);
 
       const toolCtx = getToolContext(ctx);
-      const { agents, warnings } = discoverAgents(toolCtx.cwd);
+      const { agents, warnings } = discoverAgents(toolCtx.cwd, {
+        projectTrusted: toolCtx.projectTrusted,
+      });
       notifyDiscoveryWarnings(ctx, shownDiscoveryWarnings, warnings);
       const subagent = agents.find(
         (candidate) => candidate.name === params.subagent,
@@ -332,7 +324,7 @@ export function registerCrewTools(
     }),
     promptSnippet: "Abort active subagents.",
     promptGuidelines: [
-      "crew_abort: Use one mode only: subagent_id, subagent_ids, or all=true.",
+      "crew_abort: Only for work that became obsolete, wrong, or cancelled; an incomplete result is not a reason.",
     ],
     action: (params, ctx) => {
       const { callerSessionId } = getToolContext(ctx);
@@ -394,17 +386,20 @@ export function registerCrewTools(
   registerActionTool<{ subagent_id: string; message: string }>(pi, {
     name: "crew_respond",
     label: "Respond to Crew",
-    description: "Send a follow-up message to a waiting interactive subagent.",
+    description: "Send a follow-up to a subagent awaiting an owner action. Only use when the subagent is completed or needs_input. Do not send messages while it is running. It remembers its own session, not yours.",
     parameters: Type.Object({
       subagent_id: Type.String({
         description:
-          "ID of the waiting subagent (from crew_list or crew_spawn result)",
+          "ID of the subagent awaiting an owner action (from crew_list or crew_spawn result)",
       }),
-      message: Type.String({ description: "Message to send to the subagent" }),
+      message: Type.String({
+        description:
+          "Only what the subagent could not see since its last turn: user decisions, files changed by others, corrections. Do not restate its task. Short items, ending with when to stop.",
+      }),
     }),
-    promptSnippet: "Respond to a waiting interactive subagent.",
+    promptSnippet: "Respond to a subagent awaiting an owner action.",
     promptGuidelines: [
-      "crew_respond: Send a complete follow-up to a waiting interactive subagent.",
+      "crew_respond: Answer a needs_input request or correct the same completed deliverable. New scope or a different deliverable requires a new crew_spawn.",
     ],
     action: (params, ctx) => {
       const { callerSessionId } = getToolContext(ctx);
@@ -432,13 +427,13 @@ export function registerCrewTools(
   registerActionTool<{ subagent_id: string }>(pi, {
     name: "crew_done",
     label: "Done with Crew",
-    description: "Close a waiting interactive subagent.",
+    description: "Close a subagent awaiting an owner action after its delivered result is verified.",
     parameters: Type.Object({
       subagent_id: Type.String({ description: "ID of the subagent to close" }),
     }),
-    promptSnippet: "Close a waiting interactive subagent.",
+    promptSnippet: "Close a subagent awaiting an owner action after verifying its delivered result.",
     promptGuidelines: [
-      "crew_done: Use only when no further follow-up is needed.",
+      "crew_done: Verify the delivered result before closing; use crew_respond instead when the same delivery needs correction.",
     ],
     action: (params, ctx) => {
       const { callerSessionId } = getToolContext(ctx);

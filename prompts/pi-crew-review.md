@@ -16,19 +16,23 @@ Use additional instructions when provided; otherwise review current uncommitted 
 
 Reference readable intent sources by path and state why they matter. Do not inspect implementation details before delegation.
 
-Call `crew_list` and use only compatible definitions: `code-reviewer` must be a non-interactive, read-only correctness reviewer; `quality-reviewer` must be a non-interactive, read-only maintainability reviewer. Treat `all built-in` as non-read-only. Skip incompatible or unavailable reviewers; stop if neither is usable.
+Call `crew_list` and select by role description: `code-reviewer` should focus on correctness and `quality-reviewer` on maintainability. Skip a reviewer whose description points elsewhere or that is unavailable; stop if neither is usable.
 
 ## Delegate
 
 Spawn all usable reviewers in parallel. For each task:
 
 - Set a role-specific Goal requiring evidence-backed findings or confirmation that no issue was found.
-- Put implementation intent, expected behavior, user decisions, prior fixes, and verification context in Context.
-- Use Instructions for the review scope, referenced intent sources and their purpose, additional user focus, and task-specific stop conditions.
+- Put implementation intent, expected behavior, user decisions, approved review scope, prior fixes, and verification context in Context.
+- Use Instructions for review actions, referenced intent sources and their purpose, execution constraints, additional user focus, and task-specific stop conditions.
 
 Do not repeat review criteria already owned by the selected reviewer.
 
+For a re-review after fixes, list each prior finding in Context as its own item: location, issue, and the change made for it (file, test). Name the files changed since the previous review. A reviewer cannot verify a fix it has not been told about; if you cannot list the findings, request a fresh full review and do not mention prior findings.
+
 ## Acceptance Gate
+
+Do not accept or reject any finding, or write the final report, until every spawned reviewer has settled. Handle each reviewer by exact outcome as it arrives. For `needs_input`, satisfy `needs` with `crew_respond` when you know the answer; otherwise ask the user for that exact intervention and relay it. Any reviewer may return this outcome. For `completed`, treat `report` as the full review and do not wait for another summary.
 
 Check each reported finding before accepting it, inspecting only the evidence needed rather than performing another full review.
 
@@ -38,7 +42,7 @@ Preserve verified Human Reviewer Callouts separately. Callouts are informational
 
 For full or codebase reviews, preserve each reviewer's directly inspected and skipped coverage for the final summary.
 
-Report failed, errored, or aborted reviewers without inventing their output. Continue when the completed evidence is sufficient.
+If a completed review needs correction, use `crew_respond` before accepting it. Explicitly close each accepted completed reviewer session with `crew_done`. Report failed, errored, or aborted reviewers without inventing their output. Continue when the completed evidence is sufficient.
 
 ## Output
 

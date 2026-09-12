@@ -1,6 +1,6 @@
 # pi-crew
 
-Non-blocking subagent orchestration for [pi](https://pi.dev). Run isolated subagents in parallel while your current session stays interactive. Updates return automatically to the session that started them.
+Non-blocking subagent orchestration for [pi](https://pi.dev). Run isolated subagents in parallel while your current session stays interactive. Results return automatically to the session that started them.
 
 ## Preview
 
@@ -20,21 +20,36 @@ From git:
 pi install git:github.com/melihmucuk/pi-crew
 ```
 
-This installs the extension, orchestration skill, prompt templates, and bundled subagents. pi-crew requires Pi 0.84.3 or newer.
+This installs the extension, orchestration skill, prompt templates, and six bundled subagents. Requires Pi 0.84.3 or newer.
 
-## How It Works
+## Quick Start
 
-Once installed, pi-crew exposes these capabilities in your pi session:
+Ask Pi to delegate a task:
 
-### Tools
+```text
+Ask @crew:scout to map the authentication flow and report the relevant files.
+```
 
-#### `crew_list`
+Or run a parallel review of your current changes:
 
-Lists available subagents and the active subagents owned by the current session, including each subagent's capabilities and whether it supports follow-up messages.
+```text
+/pi-crew-review
+```
 
-#### `crew_spawn`
+Keep working while the subagents run. Results arrive automatically, and successful subagents stay available for follow-up until closed.
 
-Spawns a subagent in an isolated background session. Each spawn needs a short `brief` label and a structured, self-contained `task`. Results return automatically to the Pi session that started the work. If that session is inactive, results are queued for up to 24 hours.
+## Tools
+
+| Tool | Purpose |
+| ---- | ------- |
+| `crew_list` | List agent names, role descriptions, models, and thinking levels; show owned active work with IDs, statuses, briefs, and working time. |
+| `crew_spawn` | Start a subagent with a self-contained task; returns without waiting. |
+| `crew_respond` | Answer a question or request a correction from a `completed` or `needs_input` subagent, not a running one. |
+| `crew_done` | Close a subagent after its result is verified and no follow-up remains. |
+| `crew_abort` | Cancel owned active subagents using `subagent_id`, `subagent_ids`, or `all: true`. |
+| `crew_report` | Subagent-only: submit a result or request input. See [Result protocol](docs/result-protocol.md). |
+
+Pi uses a short `brief` label and a structured task for each spawn:
 
 ```json
 {
@@ -51,175 +66,92 @@ Spawns a subagent in an isolated background session. Each spawn needs a short `b
 }
 ```
 
-`goal` states the required end result, `context` carries task-relevant owner-session facts unavailable to the isolated subagent, and `instructions` lists the concrete task-specific actions. Put approved plans in `instructions` verbatim, or reference their readable source file. In the TUI, expand the `crew_spawn` tool call to review the complete task as rendered Markdown.
+`goal` describes the finished state. `context` carries facts unavailable in the repository, including binding user decisions and approved scope. `instructions` lists actions and execution constraints.
 
-#### `crew_abort`
+The bundled [pi-crew skill](skills/pi-crew/SKILL.md) guides task writing, splitting work, verification, and follow-ups. Expand a spawn call in the TUI to read its complete task.
 
-Aborts one, many, or all active subagents owned by the current session.
+## Mentions and Workflows
 
-Supported modes:
+Type `@` to select a discovered subagent, such as `@crew:scout`, alongside Pi's file suggestions. A mention selects an agent; your sentence determines whether to delegate. Mention names support ASCII letters, digits, and hyphens.
 
-- single: `subagent_id`
-- multiple: `subagent_ids`
-- all active in current session: `all: true`
+- `/pi-crew-plan`: investigate with scouts, then ask a planner for a step-by-step implementation plan.
+- `/pi-crew-review`: run correctness and maintainability reviews in parallel, verify their findings, and merge them into one report. Reviews current uncommitted changes unless you specify a scope.
 
-```
-"abort scout-a1b2"
-"abort scout-a1b2 and worker-c3d4"
-"abort all active subagents"
-```
+Both workflows use bundled agents, so no extra definitions are needed.
 
-#### `crew_respond`
+## Bundled Agents
 
-Sends a follow-up message to an interactive subagent owned by the current session that is waiting for a response. Interactive subagents stay alive after their initial response, allowing multi-turn conversations.
+| Agent | Role |
+| ----- | ---- |
+| **scout** | Investigates a bounded question and returns evidence and relevant paths. |
+| **planner** | Produces an implementation-ready plan without writing code. |
+| **oracle** | Evaluates a decision and recommends a direction without making changes. |
+| **code-reviewer** | Reviews correctness: bugs, security, data, and runtime behavior. |
+| **quality-reviewer** | Reviews maintainability: duplication, complexity, and coupling. |
+| **worker** | Implements scoped changes and verifies them. |
 
-```
-"respond to planner-a1b2 with: yes, use the existing auth middleware"
-```
+Read-only agents have `read` and `bash`; worker gets all built-in tools. Read-only behavior is an instruction-level contract, not a sandbox boundary.
 
-#### `crew_done`
+## Customization
 
-Closes a waiting interactive subagent when you no longer need follow-up messages.
+Definitions resolve in order: **project → user → bundled**. Higher-priority definitions with the same name win. Project definitions and config load only in trusted projects.
 
-```
-"close planner-a1b2, the plan looks good"
-```
-
-### Prompt Templates
-
-#### `/pi-crew-plan`
-
-Expands a bundled prompt template that orchestrates discovery and planning for implementation tasks.
-Use it to spawn scout subagents to investigate the codebase, then delegate to a planner subagent to produce a step-by-step implementation plan.
-
-The required `scout` and `planner` definitions are bundled with pi-crew.
-
-#### `/pi-crew-review`
-
-Expands a bundled prompt template that orchestrates parallel code and quality reviews.
-Use it to review provided or default changed-code scope with `code-reviewer` and `quality-reviewer`, using structured tasks that carry intent, expected behavior, and relevant references, then merge both results into one report.
-
-The required `code-reviewer` and `quality-reviewer` definitions are bundled with pi-crew.
-
-### Skills
-
-#### `pi-crew`
-
-A bundled orchestration skill for writing self-contained tasks, coordinating parallel work, handling results, and managing interactive subagents.
-
-## Bundled Subagents
-
-pi-crew ships with six subagent definitions that cover common workflows:
-
-| Subagent             | Purpose                                                                                          | Tools         | Interactive |
-| -------------------- | ------------------------------------------------------------------------------------------------ | ------------- | ----------- |
-| **scout**            | Discovers and maps relevant code. Read-only; not for review or planning.                          | read, bash    | No          |
-| **planner**          | Creates implementation plans. Read-only; use only when the user asks for a plan.                 | read, bash    | Yes         |
-| **oracle**           | Advises on high-impact decisions and trade-offs. Read-only; not for routine review or planning.  | read, bash    | Yes         |
-| **code-reviewer**    | Reviews code changes for bugs and correctness. Read-only.                                        | read, bash    | No          |
-| **quality-reviewer** | Reviews code changes for maintainability and complexity. Read-only; use only when this focus is requested. | read, bash    | No          |
-| **worker**           | Implements and verifies code changes. Not for review, discovery, or planning.                    | all built-ins | Yes         |
-
-Read-only bundled subagents still keep `bash` for inspection workflows like `git` and `ast-grep`. This is an instruction-level contract, not a sandbox boundary.
-
-## Subagent Discovery
-
-Subagent definitions are discovered from three locations, in priority order:
-
-1. **Project**: Pi's project config agents directory (default: `<cwd>/.pi/agents/*.md`)
-2. **User global**: Pi's agent directory (default: `~/.pi/agent/agents/*.md`)
-3. **Bundled**: shipped with this package
-
-When multiple sources define a subagent with the same `name`, the higher-priority source wins. This lets you override any bundled subagent by placing a file with the same name in your project or user directory.
-
-## Custom Subagents
-
-Create `.md` files in Pi's project config agents directory (default: `<cwd>/.pi/agents/`) or global agent directory (default: `~/.pi/agent/agents/`) with YAML frontmatter:
+Create a custom agent in `.pi/agents/` or `~/.pi/agent/agents/` (Pi's default directories):
 
 ```markdown
 ---
-name: my-subagent
-description: What this subagent does
-model: anthropic/claude-haiku-4-5
-thinking: medium
-tools: read, grep, find, ls, bash
-skills: skill-1, skill-2
+name: api-scout
+description: Maps API routes and their authentication checks without changing files.
+tools: read, bash
 ---
 
-Your system prompt goes here. This is the body of the markdown file.
-
-The subagent will follow these instructions when executing tasks.
+Inspect the requested API scope and report paths and findings.
+Do not modify files. Use bash only for read-only inspection.
 ```
 
-### Frontmatter Fields
-
-| Field         | Required | Description                                                                                                          |
-| ------------- | -------- | -------------------------------------------------------------------------------------------------------------------- |
-| `name`        | yes      | Subagent identifier. No whitespace, use hyphens.                                                                     |
-| `description` | yes      | Shown in `crew_list` output.                                                                                         |
-| `model`       | no       | `provider/model-id` format (e.g., `anthropic/claude-haiku-4-5`). If omitted, uses the owner's current model.         |
-| `thinking`    | no       | Thinking level: `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`.                                           |
-| `tools`       | no       | Comma-separated list or YAML array of built-in or extension-registered Pi tool names. Omit for all built-ins (`read`, `bash`, `powershell`, `edit`, `write`, `grep`, `find`, `ls`); use an empty value or list for none. |
-| `skills`      | no       | Comma-separated list or YAML array of skill names (e.g., `ast-grep`). Omit for all; use an empty value or list for none. |
-| `compaction`  | no       | Enable context compaction. Defaults to `true`.                                                                       |
-| `interactive` | no       | Keep session alive after response for multi-turn conversations. Defaults to `false`.                                 |
-
-Subagents use the owner's Pi model configuration and credentials. A configured model must be available under its exact `provider/model-id`; otherwise the subagent fails before sending a prompt. The owner's current model is used only when the `model` field is omitted. Custom tools are available when their registering extension is also loaded in the child session; pi-crew itself is excluded to prevent recursive delegation.
-
-## Subagent Overrides via JSON
-
-You can override selected frontmatter fields without editing the `.md` definition files.
-
-Config locations follow Pi's directories:
-
-- Global: `<agentDir>/pi-crew.json` (default: `~/.pi/agent/pi-crew.json`)
-- Project: `<cwd>/<CONFIG_DIR_NAME>/pi-crew.json` (default: `<cwd>/.pi/pi-crew.json`)
-
-Project config overrides global config. Only these fields are overridable:
-
-- `model`
-- `thinking`
-- `tools`
-- `skills`
-- `compaction`
-- `interactive`
-
-`name` and `description` cannot be overridden.
-
-Example:
+Override settings without editing definitions using `.pi/pi-crew.json` or `~/.pi/agent/pi-crew.json`:
 
 ```json
 {
   "agents": {
     "scout": {
       "model": "anthropic/claude-haiku-4-5",
-      "tools": ["read", "bash"],
-      "interactive": false
+      "tools": ["+custom_tool_name"]
     },
-    "planner": {
-      "thinking": "high"
-    }
+    "planner": { "thinking": "high" }
   }
 }
 ```
 
-Override values replace the matching frontmatter fields for the named subagent after discovery. Unknown subagent names and invalid override values are ignored with warnings in `crew_list` output.
+Project fields override user fields. An omitted model inherits the owner's current model; an explicitly configured model must resolve exactly or spawning fails.
 
-## Status Widget
+The `+` prefix adds a tool without replacing the existing list. Replace `custom_tool_name` with a tool provided by an extension loaded in the child session.
 
-When the current session owns active subagents, the TUI shows their task labels, elapsed time, lifecycle state, tool-call and failure counts, cumulative input/output tokens and cost, and recent tool activity. Tool rows use safe, compact targets and result summaries where available; raw tool arguments and output are never shown.
+Ask Pi to create a custom agent using the [agent-writing workflow](skills/pi-crew/references/create-agent.md). See [Configuration](docs/configuration.md) for all frontmatter fields, tool and skill selection, override merging, and tool deltas.
 
-On session replacement paths such as `/new`, `/resume`, `/fork`, and `/reload`, subagents keep running and reconnect when their owner session becomes active again. Quitting Pi aborts active subagents.
+## Results and Sessions
 
+- **✅ `completed`**: Pi verifies the report, requests corrections if needed, then closes the subagent with `crew_done`.
+- **⏳ `needs_input`**: the subagent is waiting for an answer. Pi supplies it or asks you, then continues with `crew_respond`.
+- **Error or abort**: the subagent session is disposed; successful results are never fabricated.
+
+Results arrive automatically; no polling is needed. Switching sessions preserves background work; `/fork` and `/clone` transfer it to the new session. Quitting Pi aborts active subagents. See [delivery and session rules](docs/result-protocol.md#owner-delivery) for queued results and reload behavior.
+
+The status widget shows model, working time, tokens, cost, call counts, and recent tool activity. Waiting time does not count as working time. Press `Ctrl+Shift+E` to toggle activity details. Expand result cards to read the full report and open the child session.
+
+To hide tool-activity rows, put this in `pi-crew.json` and reload:
+
+```json
+{ "widget": { "showToolCalls": false } }
 ```
-⠋ planner-e5f6 - plan config changes | Ctrl+Shift+E  details
-  gpt-5.4 · high | ↑ 16.4k · ↓ 2.2k · $0.05
-  running 18s · 6 tool calls · showing latest 3
-  ---
-  read  README.md:208-240 · 33 lines
-```
 
-`↑` and `↓` show cumulative input and output tokens for the child session; `$` shows its cumulative cost. Model and thinking settings remain visible in both modes. Interactive subagents waiting for a response show a ⏳ icon beside their ID and `waiting for response` in the activity line. Summary mode shows the latest three calls; details mode shows the latest ten. If the total exceeds the visible window, the activity line says `showing latest 3` or `showing latest 10` after any failure count, rather than implying unavailable history can be expanded.
+Status and usage totals remain visible; execution and recording are unchanged.
+
+## Documentation
+
+- [Configuration](docs/configuration.md): discovery, custom agents, overrides, and widget settings.
+- [Result protocol](docs/result-protocol.md): report validation, lifecycle, message delivery, and TUI/model-context separation.
+- [Orchestration skill](skills/pi-crew/SKILL.md): how Pi delegates and integrates work.
 
 ## Acknowledgments
 

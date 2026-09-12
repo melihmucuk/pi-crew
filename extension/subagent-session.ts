@@ -12,8 +12,21 @@ import {
 	SessionManager,
 	SettingsManager,
 } from "@earendil-works/pi-coding-agent";
-import type { AgentConfig } from "./catalog.js";
-import type { SubagentState, SubagentToolActivity } from "./crew.js";
+import { BUILT_IN_TOOL_NAMES, type AgentConfig } from "./catalog.js";
+import type { SubagentState } from "./crew.js";
+import {
+	CREW_REPORT_CONTRACT_ERROR,
+	CREW_REPORT_REMINDER,
+	CREW_REPORT_TOOL_NAME,
+	createCrewReportTool,
+	findAcceptedReport,
+	getLastAssistantMessage,
+} from "./subagent-result.js";
+import {
+	SUBAGENT_STATUS,
+	type SubagentSettlement,
+	type SubagentToolActivity,
+} from "./subagent-status.js";
 import { formatCrewTask } from "./task.js";
 import {
 	summarizeToolName,
@@ -21,18 +34,6 @@ import {
 	summarizeToolResult,
 	summarizeToolTarget,
 } from "./tool-activity.js";
-import type { SubagentStatus } from "./ui.js";
-
-const BUILT_IN_TOOL_NAMES = Object.freeze([
-	"read",
-	"bash",
-	"powershell",
-	"edit",
-	"write",
-	"grep",
-	"find",
-	"ls",
-]);
 
 export interface BootstrapContext {
 	model: Model<Api> | undefined;
@@ -58,11 +59,7 @@ interface SubagentSessionRunnerOptions {
 	bootstrap?: (opts: BootstrapOptions) => Promise<BootstrapResult>;
 }
 
-interface PromptOutcome {
-	status: Extract<SubagentStatus, "done" | "waiting" | "error" | "aborted">;
-	result?: string;
-	error?: string;
-}
+type PromptOutcome = SubagentSettlement;
 
 interface StartOptions {
 	cwd: string;
@@ -71,26 +68,47 @@ interface StartOptions {
 	onWarning?: (message: string) => void;
 }
 
+export interface SubagentSessionInfo {
+	sessionFile?: string;
+	model?: string;
+	modelName?: string;
+	thinking?: string;
+}
+
+export interface SubagentUsage {
+	inputTokens: number;
+	outputTokens: number;
+	cost: number;
+	model?: string;
+}
+
 export interface SubagentRunnerCallbacks {
-	isCurrent: (state: SubagentState) => boolean;
-	onProgress: (ownerSessionId: string) => void;
+	onSessionAttached: (state: SubagentState, info: SubagentSessionInfo) => void;
+	onUsage: (state: SubagentState, usage: SubagentUsage) => void;
 	onToolStart: (state: SubagentState, tool: Omit<SubagentToolActivity, "status">) => void;
 	onToolEnd: (state: SubagentState, toolCallId: string, isError: boolean, resultSummary?: string) => void;
-	onSettled: (
-		state: SubagentState,
-		status: Extract<SubagentStatus, "done" | "waiting" | "error" | "aborted">,
-		outcome: { result?: string; error?: string },
-	) => void;
+	onSettled: (state: SubagentState, settlement: SubagentSettlement) => void;
 }
 
 export interface SubagentRunner {
 	start(state: SubagentState, opts: StartOptions): void;
 	respond(state: SubagentState, message: string): void;
 	abort(state: SubagentState): void;
+	dispose(state: SubagentState): void;
+}
+
+/** Per-state SDK handle; the runner is the only owner of these. */
+interface SubagentHandle {
+	bootstrapController?: AbortController;
+	session?: AgentSession;
+	unsubscribe?: () => void;
+	aborted: boolean;
+	/** Guards the one settlement a prompt cycle owes; a respond cycle clears it again. */
+	settled: boolean;
 }
 
 function resolveTools(agentConfig: AgentConfig): string[] {
-	return [...(agentConfig.tools ?? BUILT_IN_TOOL_NAMES)];
+	return [...new Set([...(agentConfig.tools ?? BUILT_IN_TOOL_NAMES), CREW_REPORT_TOOL_NAME])];
 }
 
 function resolveModel(
@@ -180,14 +198,7 @@ async function createChildModelRuntime(
 
 	for (const providerId of requiredProviderIds) {
 		const ownerAuth = ctx.modelRegistry.getProviderAuthStatus(providerId);
-		if (ownerAuth.configured && ownerAuth.source === "runtime") {
-			await transferRuntimeApiKey(providerId, ctx.modelRegistry, modelRuntime, signal);
-		}
-	}
-
-	for (const providerId of requiredProviderIds) {
-		const ownerAuth = ctx.modelRegistry.getProviderAuthStatus(providerId);
-		if (ownerAuth.configured && !await modelRuntime.checkAuth(providerId, { signal })) {
+		if (ownerAuth.configured && (ownerAuth.source === "runtime" || !await modelRuntime.checkAuth(providerId, { signal }))) {
 			await transferRuntimeApiKey(providerId, ctx.modelRegistry, modelRuntime, signal);
 		}
 	}
@@ -249,6 +260,7 @@ async function bootstrapSession(opts: BootstrapOptions): Promise<BootstrapResult
 		model,
 		thinkingLevel: agentConfig.thinking,
 		tools,
+		customTools: [createCrewReportTool()],
 		resourceLoader,
 		sessionManager,
 		settingsManager,
@@ -256,14 +268,6 @@ async function bootstrapSession(opts: BootstrapOptions): Promise<BootstrapResult
 	});
 
 	return { session: result.session, warnings };
-}
-
-function getLastAssistantMessage(messages: AgentMessage[]): AssistantMessage | undefined {
-	for (let i = messages.length - 1; i >= 0; i--) {
-		const msg = messages[i];
-		if (msg.role === "assistant") return msg as AssistantMessage;
-	}
-	return undefined;
 }
 
 function getAssistantText(message: AssistantMessage | undefined): string | undefined {
@@ -275,21 +279,23 @@ function getAssistantText(message: AssistantMessage | undefined): string | undef
 	return texts.length > 0 ? texts.join("\n") : undefined;
 }
 
-function getPromptOutcome(state: SubagentState): PromptOutcome {
-	const lastAssistant = getLastAssistantMessage(state.session!.messages);
+/** Returns undefined when the cycle ended normally without an accepted `crew_report` result. */
+function getPromptOutcome(cycleMessages: AgentMessage[]): PromptOutcome | undefined {
+	const lastAssistant = getLastAssistantMessage(cycleMessages);
 	const text = getAssistantText(lastAssistant);
 
 	if (lastAssistant?.stopReason === "error") {
-		return { status: "error", error: lastAssistant.errorMessage ?? text ?? "(no output)" };
+		return { status: SUBAGENT_STATUS.error, error: lastAssistant.errorMessage ?? text ?? "(no output)" };
 	}
 	if (lastAssistant?.stopReason === "aborted") {
-		return { status: "aborted", error: lastAssistant.errorMessage ?? text ?? "(no output)" };
+		return { status: SUBAGENT_STATUS.aborted, error: lastAssistant.errorMessage ?? text ?? "(no output)" };
 	}
-	return { status: state.agentConfig.interactive ? "waiting" : "done", result: text ?? "(no output)" };
-}
 
-function isAborted(state: SubagentState): boolean {
-	return state.status === "aborted";
+	const result = findAcceptedReport(cycleMessages);
+	if (!result) return undefined;
+	return result.outcome === SUBAGENT_STATUS.completed
+		? { status: SUBAGENT_STATUS.completed, result }
+		: { status: SUBAGENT_STATUS.needsInput, result };
 }
 
 function normalizeSessionNamePart(value: string): string {
@@ -303,7 +309,7 @@ export function formatSubagentSessionName(state: Pick<SubagentState, "agentConfi
 }
 
 export class SubagentSessionRunner implements SubagentRunner {
-	private readonly bootstrapControllers = new WeakMap<SubagentState, AbortController>();
+	private readonly handles = new Map<SubagentState, SubagentHandle>();
 	private readonly bootstrap: (opts: BootstrapOptions) => Promise<BootstrapResult>;
 
 	constructor(
@@ -315,29 +321,60 @@ export class SubagentSessionRunner implements SubagentRunner {
 
 	start(state: SubagentState, opts: StartOptions): void {
 		const controller = new AbortController();
-		this.bootstrapControllers.set(state, controller);
-		void this.spawnSession(state, opts, controller);
+		const handle: SubagentHandle = { bootstrapController: controller, aborted: false, settled: false };
+		this.handles.set(state, handle);
+		void this.spawnSession(state, opts, handle, controller);
 	}
 
 	respond(state: SubagentState, message: string): void {
-		void this.runPromptCycle(state, message);
+		const handle = this.handles.get(state) ?? { aborted: false, settled: false };
+		if (!handle.session) {
+			this.settle(state, handle, {
+				status: SUBAGENT_STATUS.error,
+				error: `Subagent "${state.id}" has no active session`,
+			});
+			return;
+		}
+		handle.settled = false;
+		void this.runPromptCycle(state, message, handle, handle.session);
 	}
 
 	abort(state: SubagentState): void {
-		this.bootstrapControllers.get(state)?.abort();
-		state.session?.abortCompaction();
-		state.session?.abort().catch(() => {});
+		const handle = this.handles.get(state);
+		if (!handle) return;
+		handle.aborted = true;
+		handle.bootstrapController?.abort();
+		handle.session?.abortCompaction();
+		handle.session?.abort().catch(() => {});
 	}
 
-	private updateUsage(state: SubagentState, session: AgentSession): void {
+	dispose(state: SubagentState): void {
+		const handle = this.handles.get(state);
+		if (!handle) return;
+		this.handles.delete(state);
+		handle.unsubscribe?.();
+		handle.session?.dispose();
+	}
+
+	/** Only settlement path: a prompt cycle settles once, and an aborted handle never settles. */
+	private settle(state: SubagentState, handle: SubagentHandle, settlement: SubagentSettlement): void {
+		if (handle.aborted || handle.settled) return;
+		handle.settled = true;
+		this.callbacks.onSettled(state, settlement);
+	}
+
+	private emitUsage(state: SubagentState, session: AgentSession, model?: string): void {
 		const stats = session.getSessionStats();
-		state.inputTokens = stats.tokens.input;
-		state.outputTokens = stats.tokens.output;
-		state.cost = stats.cost;
+		this.callbacks.onUsage(state, {
+			inputTokens: stats.tokens.input,
+			outputTokens: stats.tokens.output,
+			cost: stats.cost,
+			model,
+		});
 	}
 
-	private attachSessionListeners(state: SubagentState, session: AgentSession): void {
-		state.unsubscribe = session.subscribe((event) => {
+	private attachSessionListeners(state: SubagentState, handle: SubagentHandle, session: AgentSession): void {
+		handle.unsubscribe = session.subscribe((event) => {
 			if (event.type === "tool_execution_start") {
 				this.callbacks.onToolStart(state, {
 					id: event.toolCallId,
@@ -355,57 +392,71 @@ export class SubagentSessionRunner implements SubagentRunner {
 
 			if (event.type === "turn_end") {
 				const msg = event.message;
-				if (msg.role === "assistant") {
-					const assistant = msg as AssistantMessage;
-					state.model = `${assistant.provider}/${assistant.model}`;
-				}
-				this.updateUsage(state, session);
-				this.callbacks.onProgress(state.ownerSessionId);
+				const model = msg.role === "assistant"
+					? `${(msg as AssistantMessage).provider}/${(msg as AssistantMessage).model}`
+					: undefined;
+				this.emitUsage(state, session, model);
 				return;
 			}
 
 			if (event.type === "compaction_end") {
-				this.updateUsage(state, session);
-				this.callbacks.onProgress(state.ownerSessionId);
+				this.emitUsage(state, session);
 			}
 		});
 	}
 
-	private attachSpawnedSession(state: SubagentState, session: AgentSession): boolean {
-		if (!this.callbacks.isCurrent(state)) {
+	private attachSpawnedSession(state: SubagentState, handle: SubagentHandle, session: AgentSession): boolean {
+		if (this.handles.get(state) !== handle || handle.aborted) {
 			session.dispose();
 			return false;
 		}
-		state.session = session;
-		state.model = session.model ? `${session.model.provider}/${session.model.id}` : undefined;
-		state.thinking = session.thinkingLevel;
+		handle.session = session;
 		session.setSessionName(formatSubagentSessionName(state));
+		this.callbacks.onSessionAttached(state, {
+			sessionFile: session.sessionFile,
+			model: session.model ? `${session.model.provider}/${session.model.id}` : undefined,
+			modelName: session.model?.name,
+			thinking: session.thinkingLevel,
+		});
 		return true;
 	}
 
-	private async runPromptCycle(state: SubagentState, prompt: string): Promise<void> {
-		if (isAborted(state)) return;
+	private async runPromptCycle(
+		state: SubagentState,
+		prompt: string,
+		handle: SubagentHandle,
+		session: AgentSession,
+	): Promise<void> {
+		if (handle.aborted) return;
 
 		try {
-			await state.session!.prompt(prompt);
-			if (isAborted(state)) return;
+			const start = session.messages.length;
+			await session.prompt(prompt);
+			if (handle.aborted) return;
 
-			const outcome = getPromptOutcome(state);
-			this.callbacks.onSettled(state, outcome.status, outcome);
+			let outcome = getPromptOutcome(session.messages.slice(start));
+			if (!outcome) {
+				await session.prompt(CREW_REPORT_REMINDER);
+				if (handle.aborted) return;
+				outcome = getPromptOutcome(session.messages.slice(start))
+					?? { status: SUBAGENT_STATUS.error, error: CREW_REPORT_CONTRACT_ERROR };
+			}
+			this.settle(state, handle, outcome);
 		} catch (err) {
-			if (isAborted(state)) return;
+			if (handle.aborted) return;
 			const error = err instanceof Error ? err.message : String(err);
-			this.callbacks.onSettled(state, "error", { error });
+			this.settle(state, handle, { status: SUBAGENT_STATUS.error, error });
 		}
 	}
 
 	private async spawnSession(
 		state: SubagentState,
 		opts: StartOptions,
+		handle: SubagentHandle,
 		bootstrapController: AbortController,
 	): Promise<void> {
 		try {
-			if (isAborted(state)) return;
+			if (handle.aborted) return;
 
 			let bootstrapResult: BootstrapResult;
 			try {
@@ -417,23 +468,19 @@ export class SubagentSessionRunner implements SubagentRunner {
 					signal: bootstrapController.signal,
 				});
 			} finally {
-				if (this.bootstrapControllers.get(state) === bootstrapController) {
-					this.bootstrapControllers.delete(state);
-				}
+				handle.bootstrapController = undefined;
 			}
 			const { session, warnings } = bootstrapResult;
 
 			for (const warning of warnings) opts.onWarning?.(warning);
-			if (!this.attachSpawnedSession(state, session)) return;
+			if (!this.attachSpawnedSession(state, handle, session)) return;
 
-			this.attachSessionListeners(state, session);
-			await this.runPromptCycle(state, formatCrewTask(state.task));
+			this.attachSessionListeners(state, handle, session);
+			await this.runPromptCycle(state, formatCrewTask(state.task), handle, session);
 		} catch (err) {
-			if (isAborted(state)) return;
-			if (state.status === "running") {
-				const error = err instanceof Error ? err.message : String(err);
-				this.callbacks.onSettled(state, "error", { error });
-			}
+			if (handle.aborted) return;
+			const error = err instanceof Error ? err.message : String(err);
+			this.settle(state, handle, { status: SUBAGENT_STATUS.error, error });
 		}
 	}
 }

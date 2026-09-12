@@ -7,19 +7,19 @@ export const CrewTaskSchema = Type.Object(
 	{
 		goal: Type.String({
 			...NonEmptyStringSchema,
-			description: "The required end result. Describe what success looks like, not the steps or background.",
+			description: "The finished state in one or two sentences, including how completion is recognized. No steps, no background.",
 		}),
 		context: Type.Array(NonEmptyStringSchema, {
-			description: "Task-relevant owner-session facts unavailable to the isolated subagent. Include user intent, decisions, constraints, and prior findings that must carry forward. Exclude actions and repo-discoverable facts unless they are prior findings being handed off. Use an empty array when none is needed.",
+			description: "Facts the subagent cannot find in the repository: user decisions, approved scope, prior findings. User decisions and approved scope are binding. Put actions and execution constraints in instructions. Empty array when none.",
 		}),
 		instructions: Type.Array(NonEmptyStringSchema, {
 			minItems: 1,
-			description: "Concrete task-specific actions to achieve the goal, ordered when needed. Include approved plans verbatim or reference their source file. Do not repeat context or the subagent's generic rules.",
+			description: "One action or one constraint per item, ordered. Prohibitions as explicit \"Do not ...\" items. Last item states when to stop and report. Approved plan steps verbatim, or by path when they live in a file.",
 		}),
 	},
 	{
 		additionalProperties: false,
-		description: "A complete, self-contained assignment for an isolated subagent.",
+		description: "A self-contained assignment. The subagent sees only this, the repository, and its own definition.",
 	},
 );
 

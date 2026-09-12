@@ -1,7 +1,7 @@
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, it } from "node:test";
+import { after, before, describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { stripVTControlCharacters } from "node:util";
 import { initTheme } from "@earendil-works/pi-coding-agent";
@@ -53,15 +53,16 @@ class FakeCrew {
 	}
 }
 
-function repoWithAgent(name = "scout"): string {
+function repoWithAgent(name = "scout", model?: string): string {
 	const cwd = mkdtempSync(join(tmpdir(), "pi-crew-tools-"));
 	const agentsDir = join(cwd, ".pi", "agents");
 	mkdirSync(agentsDir, { recursive: true });
-	writeFileSync(join(agentsDir, `${name}.md`), ["---", `name: ${name}`, `description: ${name} description`, "---", `${name} prompt`].join("\n"));
+	const frontmatter = ["---", `name: ${name}`, `description: ${name} description`, ...(model ? [`model: ${model}`] : []), "---", `${name} prompt`];
+	writeFileSync(join(agentsDir, `${name}.md`), frontmatter.join("\n"));
 	return cwd;
 }
 
-function setup() {
+function setup(opts: { agentModel?: string } = {}) {
 	const crew = new FakeCrew();
 	const tools = new Map<string, any>();
 	const sent: Array<{ message: unknown; options: unknown }> = [];
@@ -75,15 +76,15 @@ function setup() {
 	};
 	registerCrewTools(pi as never, crew as never, "/pkg/extension");
 	const ctx = {
-		cwd: repoWithAgent(),
+		cwd: repoWithAgent("scout", opts.agentModel),
 		hasUI: false,
-		isIdle: () => false,
 		model: undefined,
-		modelRegistry: {} as never,
+		modelRegistry: { find: () => ({ name: "Resolved Model" }) } as never,
 		sessionManager: {
 			getSessionId: () => "owner-1",
 			getSessionFile: () => "/sessions/parent.jsonl",
 		},
+		isProjectTrusted: () => true,
 		ui: { notify() {} },
 	};
 	return { crew, tools, ctx, sent };
@@ -94,20 +95,46 @@ async function execute(tools: Map<string, any>, name: string, params: object, ct
 }
 
 describe("tools", () => {
+	let previousAgentDir: string | undefined;
+
+	before(() => {
+		previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+		process.env.PI_CODING_AGENT_DIR = mkdtempSync(join(tmpdir(), "pi-crew-agent-dir-"));
+	});
+
+	after(() => {
+		if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+		else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+	});
+
 	it("lists available and active subagents and warns when active jobs exist", async () => {
 		const { crew, tools, ctx, sent } = setup();
-		crew.active = [{ id: "planner-1", agentName: "planner", status: "waiting", inputTokens: 1_000, outputTokens: 200, cost: 0.01, model: "model-x", thinking: "medium", toolCallCount: 0, toolFailureCount: 0, toolActivities: [], startedAt: 0 }];
+		crew.active = [{ id: "planner-1", agentName: "planner", brief: "plan the migration\nstatus: \u001b[31mforged\u001b[0m", status: "completed", result: { outcome: "completed", report: "plan" }, inputTokens: 1_000, outputTokens: 200, cost: 0.01, model: "model-x", modelName: undefined, thinking: "medium", toolCallCount: 0, toolFailureCount: 0, toolActivities: [], workedMs: 5_000 }];
 
 		const response = await execute(tools, "crew_list", {}, ctx);
 		await Promise.resolve();
 
 		assert.match(text(response), /name: scout/);
 		assert.match(text(response), /model: owner session model/);
+		assert.doesNotMatch(text(response), /^(tools|skills|interactive):/m);
 		assert.match(text(response), /id: planner-1/);
-		assert.match(text(response), /status: ⏳ waiting/);
+		assert.match(text(response), /^brief: plan the migration status: forged$/m);
+		assert.doesNotMatch(text(response), /^status: forged/m);
+		assert.equal(text(response), stripVTControlCharacters(text(response)));
+		assert.match(text(response), /worked: 5s/);
+		assert.match(text(response), /^status: completed$/m);
 		assert.match(text(response), /model: model-x/);
-		assert.deepEqual(sent[0]?.options, { deliverAs: "steer", triggerTurn: true });
-		assert.match(String((sent[0]?.message as { content?: unknown } | undefined)?.content), /Do not poll crew_list/);
+		// The warning belongs to the tool result, not to a separate message and owner turn.
+		assert.match(text(response), /^⚠ Active subagents detected\. Do not poll crew_list; results arrive automatically\.$/m);
+		assert.equal(sent.length, 0);
+	});
+
+	it("resolves the catalog name of a configured model through the registry", async () => {
+		const { tools, ctx } = setup({ agentModel: "provider/model-id" });
+
+		const response = await execute(tools, "crew_list", {}, ctx);
+
+		assert.match(text(response), /^model: \[provider\] Resolved Model$/m);
 	});
 
 	it("registers crew_spawn with closed, grammar-compatible schemas without strict constrained sampling", () => {
@@ -116,6 +143,10 @@ describe("tools", () => {
 		const task = spawn.parameters.properties.task;
 
 		assert.equal(spawn.constrainedSampling, undefined);
+		assert.ok(spawn.promptGuidelines.some((guideline: string) =>
+			guideline.includes("reference identifies the user's selected subagent") &&
+			guideline.includes("sentence's intent"),
+		));
 		assert.equal(spawn.parameters.additionalProperties, false);
 		assert.equal(task.additionalProperties, false);
 		assert.equal(task.properties.goal.pattern, undefined);
@@ -225,6 +256,19 @@ describe("tools", () => {
 			() => execute(tools, "crew_abort", { all: true }, ctx),
 			/No active subagents in the current session\./,
 		);
+	});
+
+	it("describes universal follow-up and explicit verified close behavior", () => {
+		const { tools } = setup();
+		const respond = tools.get("crew_respond");
+		const done = tools.get("crew_done");
+
+		assert.doesNotMatch(`${respond.description} ${respond.promptSnippet}`, /interactive/i);
+		assert.match(respond.promptGuidelines.join("\n"), /Answer a needs_input request/);
+		assert.match(respond.promptGuidelines.join("\n"), /correct the same completed deliverable/);
+		assert.doesNotMatch(`${done.description} ${done.promptSnippet}`, /interactive/i);
+		assert.match(done.promptGuidelines.join("\n"), /Verify the delivered result/);
+		assert.match(done.promptGuidelines.join("\n"), /same delivery needs correction/);
 	});
 
 	it("passes respond and done errors through and formats success", async () => {

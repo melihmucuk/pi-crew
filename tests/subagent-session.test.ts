@@ -3,20 +3,25 @@ import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { describe, it } from "node:test";
+import { describe, it, type TestContext } from "node:test";
 import assert from "node:assert/strict";
 import {
 	createFauxCore,
 	fauxAssistantMessage,
 	fauxToolCall,
 	type Api,
+	type Context,
+	type FauxResponseStep,
+	type Model,
 	type Provider,
 	type SimpleStreamOptions,
 } from "@earendil-works/pi-ai";
 import { ModelRegistry, ModelRuntime } from "@earendil-works/pi-coding-agent";
 import type { AgentConfig } from "../extension/catalog.js";
 import type { SubagentState } from "../extension/crew.js";
-import { SubagentSessionRunner } from "../extension/subagent-session.js";
+import { CREW_REPORT_REMINDER, CREW_REPORT_TOOL_NAME } from "../extension/subagent-result.js";
+import type { SubagentSettlement } from "../extension/subagent-status.js";
+import { SubagentSessionRunner, type SubagentRunnerCallbacks, type SubagentUsage } from "../extension/subagent-session.js";
 import type { CrewTask } from "../extension/task.js";
 
 const DYNAMIC_PROVIDER = "pi-crew-dynamic-test";
@@ -32,35 +37,276 @@ function task(instruction: string): CrewTask {
 	};
 }
 
-function createState(id: string, agentConfig: AgentConfig): SubagentState {
+function createState(id: string, agentConfig: AgentConfig, overrides: Partial<SubagentState> = {}): SubagentState {
 	return {
 		id,
 		agentConfig,
 		task: task("Run the bootstrap test"),
 		toolFailureCount: 0,
 		activeToolCallIds: new Set(),
-		startedAt: 0,
+		workedMs: 0,
+		runningSince: undefined,
 		brief: "SDK bootstrap",
-		status: "running",
+		lifecycle: { status: "running" },
 		ownerSessionId: "owner-test",
-		session: null,
+		sessionFile: undefined,
 		inputTokens: 0,
 		outputTokens: 0,
 		cost: 0,
 		model: undefined,
+		modelName: undefined,
 		thinking: undefined,
 		toolCallCount: 0,
 		toolActivities: [],
+		...overrides,
 	};
+}
+
+/** Mirrors how `CrewRuntime` applies runner callbacks onto the owned state. */
+function stateCallbacks(opts: {
+	onToolStart?: SubagentRunnerCallbacks["onToolStart"];
+	onToolEnd?: SubagentRunnerCallbacks["onToolEnd"];
+	onUsage?: (state: SubagentState, usage: SubagentUsage) => void;
+	onSettled: SubagentRunnerCallbacks["onSettled"];
+}): SubagentRunnerCallbacks {
+	return {
+		onSessionAttached: (state, info) => {
+			state.sessionFile = info.sessionFile;
+			state.model = info.model;
+			state.modelName = info.modelName;
+			state.thinking = info.thinking;
+		},
+		onUsage: (state, usage) => {
+			state.inputTokens = usage.inputTokens;
+			state.outputTokens = usage.outputTokens;
+			state.cost = usage.cost;
+			if (usage.model !== undefined) state.model = usage.model;
+			opts.onUsage?.(state, usage);
+		},
+		onToolStart: opts.onToolStart ?? (() => {}),
+		onToolEnd: opts.onToolEnd ?? (() => {}),
+		onSettled: opts.onSettled,
+	};
+}
+
+type Settlement = SubagentSettlement;
+
+type SdkFixture = Awaited<ReturnType<typeof createSdkFixture>>;
+
+/**
+ * Temp root with `repo`/`agent` dirs plus an offline owner runtime and registry.
+ * Registered cleanups run before the root is removed.
+ */
+async function createSdkFixture(t: TestContext, prefix: string) {
+	const root = await mkdtemp(join(tmpdir(), prefix));
+	const cwd = join(root, "repo");
+	const agentDir = join(root, "agent");
+	await Promise.all([mkdir(cwd), mkdir(agentDir)]);
+	const ownerRuntime = await ModelRuntime.create({
+		authPath: join(agentDir, "auth.json"),
+		modelsPath: join(agentDir, "models.json"),
+		allowModelNetwork: false,
+	});
+	const ownerRegistry = new ModelRegistry(ownerRuntime);
+	const cleanups: Array<() => void> = [];
+	t.after(async () => {
+		for (const cleanup of cleanups) cleanup();
+		await rm(root, { recursive: true, force: true });
+	});
+	return { root, cwd, agentDir, ownerRuntime, ownerRegistry, cleanups };
+}
+
+/** Starts a fresh runner for one state and resolves with its single settlement. */
+function runToSettlement(
+	fixture: SdkFixture,
+	state: SubagentState,
+	opts: {
+		model?: Model<Api>;
+		onWarning?: (warning: string) => void;
+		onToolStart?: SubagentRunnerCallbacks["onToolStart"];
+		onToolEnd?: SubagentRunnerCallbacks["onToolEnd"];
+		onUsage?: (state: SubagentState, usage: SubagentUsage) => void;
+	} = {},
+): Promise<Settlement> {
+	let settle!: (value: Settlement) => void;
+	const settled = new Promise<Settlement>((resolve) => {
+		settle = resolve;
+	});
+	const runner = new SubagentSessionRunner(stateCallbacks({
+		onToolStart: opts.onToolStart,
+		onToolEnd: opts.onToolEnd,
+		onUsage: opts.onUsage,
+		onSettled: (_state, settlement) => settle(settlement),
+	}));
+	fixture.cleanups.push(() => runner.dispose(state));
+
+	runner.start(state, {
+		cwd: fixture.cwd,
+		ctx: { model: opts.model, modelRegistry: fixture.ownerRegistry, agentDir: fixture.agentDir },
+		extensionResolvedPath: join(fixture.root, "pi-crew", "extension"),
+		onWarning: opts.onWarning,
+	});
+
+	let timeout: NodeJS.Timeout | undefined;
+	return Promise.race([
+		settled,
+		new Promise<never>((_, reject) => {
+			timeout = setTimeout(() => reject(new Error(`subagent "${state.id}" prompt timed out`)), 5_000);
+		}),
+	]).finally(() => clearTimeout(timeout));
+}
+
+/** Agent definition with the fields these SDK tests never vary. */
+function agentConfigFor(agentDir: string, name: string, overrides: Partial<AgentConfig> = {}): AgentConfig {
+	return {
+		name,
+		description: `${name} test`,
+		systemPrompt: "Reply using the configured provider.",
+		filePath: join(agentDir, "agents", `${name}.md`),
+		tools: [],
+		compaction: false,
+		...overrides,
+	};
+}
+
+/** Extension-registered provider backed by a faux core, authenticated by a plain API key. */
+function nativeFauxProvider(
+	providerId: string,
+	faux: ReturnType<typeof createFauxCore>,
+	overrides: Partial<Provider>,
+): Provider {
+	return {
+		id: providerId,
+		name: `${providerId} provider`,
+		auth: {
+			apiKey: {
+				name: `${providerId} API key`,
+				resolve: async ({ credential }) => credential?.key
+					? { auth: { apiKey: credential.key } }
+					: undefined,
+			},
+		},
+		getModels: () => faux.models,
+		stream: (model, context) => faux.stream(model, context),
+		streamSimple: faux.streamSimple,
+		...overrides,
+	};
+}
+
+/** Starts a runner whose bootstrap is stubbed, so no path or registry is ever touched. */
+function startWithStubBootstrap(runner: SubagentSessionRunner, state: SubagentState): void {
+	runner.start(state, {
+		cwd: "/repo",
+		ctx: { model: undefined, modelRegistry: {} as never, agentDir: "/agent" },
+		extensionResolvedPath: "/pkg/extension",
+	});
+}
+
+let protocolHarnessId = 0;
+
+async function createProtocolHarness(
+	t: TestContext,
+	responses: FauxResponseStep[],
+	opts: { tools?: string[]; queueAfterFirstReport?: boolean } = {},
+) {
+	const { root, cwd, agentDir, ownerRuntime, ownerRegistry, cleanups } = await createSdkFixture(t, "pi-crew-result-protocol-");
+	await writeFile(join(cwd, "fixture.txt"), "fixture contents\n");
+	if (opts.queueAfterFirstReport) {
+		const extensionsDir = join(agentDir, "extensions");
+		await mkdir(extensionsDir);
+		await writeFile(join(extensionsDir, "queue-after-report.ts"), `
+export default function (pi) {
+	let queued = false;
+	pi.on("agent_end", (event) => {
+		const finalMessage = event.messages.at(-1);
+		if (queued || finalMessage?.role !== "toolResult" || finalMessage.toolName !== "${CREW_REPORT_TOOL_NAME}") return;
+		queued = true;
+		pi.sendMessage({
+			customType: "queue-after-report",
+			content: "Run one more continuation after the report.",
+			display: false,
+		}, { deliverAs: "followUp", triggerTurn: true });
+	});
+}
+`);
+	}
+
+	const id = ++protocolHarnessId;
+	const providerId = `pi-crew-result-protocol-${id}`;
+	const modelId = "protocol-model";
+	const faux = createFauxCore({ provider: providerId, models: [{ id: modelId }] });
+	faux.setResponses(responses);
+	const contexts: Context[] = [];
+	ownerRuntime.registerProvider(providerId, {
+		baseUrl: "https://offline.invalid",
+		api: faux.api as Api,
+		models: faux.models,
+		streamSimple: (model, context, options?: SimpleStreamOptions) => {
+			contexts.push(context);
+			return faux.streamSimple(model as never, context, options);
+		},
+	});
+	await ownerRuntime.setRuntimeApiKey(providerId, RUNTIME_KEY);
+	const agentConfig = agentConfigFor(agentDir, `result-protocol-${id}`, {
+		model: `${providerId}/${modelId}`,
+		parsedModel: { provider: providerId, modelId },
+		tools: opts.tools ?? [],
+	});
+	const state = createState(`result-protocol-${id}`, agentConfig);
+	const settlements: Settlement[] = [];
+	const settlementWaiters: Array<(settlement: Settlement) => void> = [];
+	const runner = new SubagentSessionRunner(stateCallbacks({
+		onSettled: (_state, settlement) => {
+			state.lifecycle = settlement;
+			settlements.push(settlement);
+			settlementWaiters.shift()?.(settlement);
+		},
+	}));
+	const nextSettlement = () => new Promise<Settlement>((resolve) => settlementWaiters.push(resolve));
+	const start = () => {
+		const settled = nextSettlement();
+		runner.start(state, {
+			cwd,
+			ctx: { model: undefined, modelRegistry: ownerRegistry, agentDir },
+			extensionResolvedPath: join(root, "pi-crew", "extension"),
+		});
+		return settled;
+	};
+	const respond = (message: string) => {
+		state.lifecycle = { status: "running" };
+		const settled = nextSettlement();
+		runner.respond(state, message);
+		return settled;
+	};
+
+	cleanups.push(() => runner.dispose(state));
+	return { cwd, faux, state, contexts, settlements, runner, start, respond };
+}
+
+/** Reminders observed by the child model; every sent reminder appears in each later request context. */
+function reminderCount(contexts: Context[]): number {
+	let highest = 0;
+	for (const context of contexts) {
+		const count = context.messages.filter((message) => {
+			if (message.role !== "user") return false;
+			if (typeof message.content === "string") return message.content === CREW_REPORT_REMINDER;
+			return message.content.some((part) => part.type === "text" && part.text === CREW_REPORT_REMINDER);
+		}).length;
+		if (count > highest) highest = count;
+	}
+	return highest;
+}
+
+function completedReport(report: string, id: string) {
+	return fauxAssistantMessage(fauxToolCall(CREW_REPORT_TOOL_NAME, { outcome: "completed", report }, { id }));
 }
 
 describe("SubagentSessionRunner SDK bootstrap", () => {
 	it("runs a child prompt with a dynamic extension provider, runtime credential, and custom tool", async (t) => {
-		const root = await mkdtemp(join(tmpdir(), "pi-crew-sdk-"));
-		const cwd = join(root, "repo");
-		const agentDir = join(root, "agent");
+		const fixture = await createSdkFixture(t, "pi-crew-sdk-");
+		const { agentDir, ownerRuntime } = fixture;
 		const extensionsDir = join(agentDir, "extensions");
-		await Promise.all([mkdir(cwd), mkdir(extensionsDir, { recursive: true })]);
+		await mkdir(extensionsDir);
 		await writeFile(join(extensionsDir, "custom-tools.ts"), `
 import { Type } from ${JSON.stringify(TYPEBOX_MODULE_URL)};
 
@@ -98,18 +344,13 @@ export default function (pi) {
 						.map((part) => part.text)
 						.join("\n");
 				}
-				return fauxAssistantMessage("child prompt succeeded");
+				return completedReport("child prompt succeeded", "report-1");
 			},
 		]);
 		const receivedKeys: Array<string | undefined> = [];
 		let networkRequested = false;
 		let refreshCalls = 0;
 
-		const ownerRuntime = await ModelRuntime.create({
-			authPath: join(agentDir, "auth.json"),
-			modelsPath: join(agentDir, "models.json"),
-			allowModelNetwork: false,
-		});
 		ownerRuntime.registerProvider(DYNAMIC_PROVIDER, {
 			baseUrl: "https://offline.invalid",
 			api: faux.api as Api,
@@ -136,104 +377,55 @@ export default function (pi) {
 		await new Promise<void>((resolve) => setImmediate(resolve));
 		const ownerRefreshCalls = refreshCalls;
 
-		const agentConfig: AgentConfig = {
-			name: "sdk-test",
-			description: "SDK bootstrap test",
-			systemPrompt: "Reply using the configured provider.",
-			filePath: join(agentDir, "agents", "sdk-test.md"),
+		const agentConfig = agentConfigFor(agentDir, "sdk-test", {
 			model: `${DYNAMIC_PROVIDER}/${DYNAMIC_MODEL}`,
 			parsedModel: { provider: DYNAMIC_PROVIDER, modelId: DYNAMIC_MODEL },
 			tools: ["custom_echo"],
-			compaction: false,
-		};
-		const state: SubagentState = {
-			id: "sdk-test-1",
-			toolFailureCount: 0,
-			activeToolCallIds: new Set(),
-			startedAt: 0,
-			agentConfig,
-			task: task("Run the test response"),
-			brief: "SDK bootstrap",
-			status: "running",
-			ownerSessionId: "owner-test",
-			session: null,
-			inputTokens: 0,
-			outputTokens: 0,
-			cost: 0,
-			model: undefined,
-			thinking: undefined,
-			toolCallCount: 0,
-			toolActivities: [],
-		};
-
-		let settle!: (value: { status: string; result?: string; error?: string }) => void;
-		const settled = new Promise<{ status: string; result?: string; error?: string }>((resolve) => {
-			settle = resolve;
 		});
-		const ownerRegistry = new ModelRegistry(ownerRuntime);
+		const state = createState("sdk-test-1", agentConfig, { task: task("Run the test response") });
+
 		const toolEvents: string[] = [];
-		const runner = new SubagentSessionRunner({
-			isCurrent: (candidate) => candidate === state,
-			onProgress: () => {},
+		const usages: SubagentUsage[] = [];
+		const outcome = await runToSettlement(fixture, state, {
 			onToolStart: (_state, tool) => toolEvents.push(`start:${tool.id}:${tool.name}:${tool.target}`),
 			onToolEnd: (_state, toolCallId, isError) => toolEvents.push(`end:${toolCallId}:${String(isError)}`),
-			onSettled: (_state, status, outcome) => settle({ status, ...outcome }),
-		});
-		t.after(async () => {
-			state.session?.dispose();
-			await rm(root, { recursive: true, force: true });
+			onUsage: (_state, usage) => usages.push(usage),
 		});
 
-		runner.start(state, {
-			cwd,
-			ctx: {
-				model: undefined,
-				modelRegistry: ownerRegistry,
-				agentDir,
-			},
-			extensionResolvedPath: join(root, "pi-crew", "extension"),
+		assert.deepEqual(outcome, {
+			status: "completed",
+			result: { outcome: "completed", report: "child prompt succeeded" },
 		});
-
-		let timeout: NodeJS.Timeout | undefined;
-		const outcome = await Promise.race([
-			settled,
-			new Promise<never>((_, reject) => {
-				timeout = setTimeout(() => reject(new Error("subagent prompt timed out")), 5_000);
-			}),
-		]).finally(() => clearTimeout(timeout));
-
-		assert.deepEqual(outcome, { status: "done", result: "child prompt succeeded" });
 		assert.match(receivedPrompt, /## Goal\n\nComplete the SDK bootstrap test\./);
 		assert.match(receivedPrompt, /## Context\n\nNone\./);
 		assert.match(receivedPrompt, /## Instructions\n\n1\. Run the test response/);
 		assert.equal(receivedToolResult, "[child] from child");
 		assert.deepEqual(receivedKeys, [RUNTIME_KEY, RUNTIME_KEY]);
-		assert.deepEqual(toolEvents, ["start:tool-1:custom_echo:from child", "end:tool-1:false"]);
+		assert.deepEqual(toolEvents, [
+			"start:tool-1:custom_echo:from child",
+			"end:tool-1:false",
+			"start:report-1:crew_report:completed",
+			"end:report-1:false",
+		]);
 		assert.equal(networkRequested, false);
 		assert.equal(refreshCalls, ownerRefreshCalls);
 		assert.equal(state.model, `${DYNAMIC_PROVIDER}/${DYNAMIC_MODEL}`);
 		assert.equal(state.thinking, "off");
-		const stats = state.session?.getSessionStats();
-		assert.equal(state.inputTokens, stats?.tokens.input);
-		assert.equal(state.outputTokens, stats?.tokens.output);
-		assert.equal(state.cost, stats?.cost);
-		assert.ok(state.session?.sessionFile?.startsWith(join(agentDir, "sessions")));
+		const lastUsage = usages.at(-1);
+		assert.ok(lastUsage && lastUsage.inputTokens > 0 && lastUsage.outputTokens > 0);
+		assert.equal(state.inputTokens, lastUsage.inputTokens);
+		assert.equal(state.outputTokens, lastUsage.outputTokens);
+		assert.equal(state.cost, lastUsage.cost);
+		assert.ok(state.sessionFile?.startsWith(join(agentDir, "sessions")));
 	});
 
 	it("fails before prompting when an explicit model is unavailable and inherits only when omitted", async (t) => {
-		const root = await mkdtemp(join(tmpdir(), "pi-crew-strict-model-"));
-		const cwd = join(root, "repo");
-		const agentDir = join(root, "agent");
-		await Promise.all([mkdir(cwd), mkdir(agentDir)]);
+		const fixture = await createSdkFixture(t, "pi-crew-strict-model-");
+		const { agentDir, ownerRuntime, ownerRegistry } = fixture;
 
 		const providerId = "pi-crew-strict-model-test";
 		const ownerModelId = "owner-model";
 		const faux = createFauxCore({ provider: providerId, models: [{ id: ownerModelId }] });
-		const ownerRuntime = await ModelRuntime.create({
-			authPath: join(agentDir, "auth.json"),
-			modelsPath: join(agentDir, "models.json"),
-			allowModelNetwork: false,
-		});
 		ownerRuntime.registerProvider(providerId, {
 			baseUrl: "https://offline.invalid",
 			api: faux.api as Api,
@@ -241,80 +433,28 @@ export default function (pi) {
 			streamSimple: faux.streamSimple,
 		});
 		await ownerRuntime.setRuntimeApiKey(providerId, RUNTIME_KEY);
-		const ownerRegistry = new ModelRegistry(ownerRuntime);
 		const ownerModel = ownerRegistry.find(providerId, ownerModelId);
 		assert.ok(ownerModel);
 
-		const states: SubagentState[] = [];
-		t.after(async () => {
-			for (const state of states) state.session?.dispose();
-			await rm(root, { recursive: true, force: true });
+		const makeState = (id: string, agentConfig: AgentConfig): SubagentState => createState(id, agentConfig, {
+			task: task("Run the strict model test"),
+			brief: "Strict model selection",
+			ownerSessionId: "owner-strict-model",
 		});
-
-		const makeState = (id: string, agentConfig: AgentConfig): SubagentState => {
-			const state: SubagentState = {
-				id,
-				agentConfig,
-				task: task("Run the strict model test"),
-				brief: "Strict model selection",
-				status: "running",
-				ownerSessionId: "owner-strict-model",
-				toolFailureCount: 0,
-				activeToolCallIds: new Set(),
-				startedAt: 0,
-				session: null,
-				inputTokens: 0,
-				outputTokens: 0,
-				cost: 0,
-				model: undefined,
-				thinking: undefined,
-				toolCallCount: 0,
-				toolActivities: [],
-			};
-			states.push(state);
-			return state;
-		};
 
 		const run = async (state: SubagentState) => {
 			const warnings: string[] = [];
-			let settle!: (value: { status: string; result?: string; error?: string }) => void;
-			const settled = new Promise<{ status: string; result?: string; error?: string }>((resolve) => {
-				settle = resolve;
-			});
-			const runner = new SubagentSessionRunner({
-				isCurrent: (candidate) => candidate === state,
-				onProgress: () => {},
-				onToolStart: () => {},
-				onToolEnd: () => {},
-				onSettled: (_state, status, outcome) => settle({ status, ...outcome }),
-			});
-			runner.start(state, {
-				cwd,
-				ctx: { model: ownerModel, modelRegistry: ownerRegistry, agentDir },
-				extensionResolvedPath: join(root, "pi-crew", "extension"),
+			const outcome = await runToSettlement(fixture, state, {
+				model: ownerModel,
 				onWarning: (warning) => warnings.push(warning),
 			});
-
-			let timeout: NodeJS.Timeout | undefined;
-			const outcome = await Promise.race([
-				settled,
-				new Promise<never>((_, reject) => {
-					timeout = setTimeout(() => reject(new Error("strict model test timed out")), 5_000);
-				}),
-			]).finally(() => clearTimeout(timeout));
 			return { outcome, warnings };
 		};
 
-		const unavailableState = makeState("strict-model-missing", {
-			name: "strict-model",
-			description: "Strict model selection test",
-			systemPrompt: "Use only the configured model.",
-			filePath: join(agentDir, "agents", "strict-model.md"),
+		const unavailableState = makeState("strict-model-missing", agentConfigFor(agentDir, "strict-model", {
 			model: `${providerId}/missing-model`,
 			parsedModel: { provider: providerId, modelId: "missing-model" },
-			tools: [],
-			compaction: false,
-		});
+		}));
 		const unavailable = await run(unavailableState);
 
 		assert.deepEqual(unavailable.outcome, {
@@ -323,134 +463,67 @@ export default function (pi) {
 		});
 		assert.deepEqual(unavailable.warnings, []);
 		assert.equal(faux.state.callCount, 0);
-		assert.equal(unavailableState.session, null);
+		assert.equal(unavailableState.sessionFile, undefined);
 
-		faux.setResponses([fauxAssistantMessage("owner model inherited")]);
-		const inheritedState = makeState("strict-model-inherited", {
-			name: "inherited-model",
-			description: "Owner model inheritance test",
-			systemPrompt: "Use the owner model.",
-			filePath: join(agentDir, "agents", "inherited-model.md"),
-			tools: [],
-			compaction: false,
-		});
+		faux.setResponses([completedReport("owner model inherited", "inherited-report")]);
+		const inheritedState = makeState("strict-model-inherited", agentConfigFor(agentDir, "inherited-model"));
 		const inherited = await run(inheritedState);
 
-		assert.deepEqual(inherited.outcome, { status: "done", result: "owner model inherited" });
+		assert.deepEqual(inherited.outcome, {
+			status: "completed",
+			result: { outcome: "completed", report: "owner model inherited" },
+		});
 		assert.equal(faux.state.callCount, 1);
 		assert.equal(inheritedState.model, `${providerId}/${ownerModelId}`);
 	});
 
 	it("runs a child prompt with a native extension provider", async (t) => {
-		const root = await mkdtemp(join(tmpdir(), "pi-crew-native-sdk-"));
-		const cwd = join(root, "repo");
-		const agentDir = join(root, "agent");
-		await Promise.all([mkdir(cwd), mkdir(agentDir)]);
+		const fixture = await createSdkFixture(t, "pi-crew-native-sdk-");
+		const { agentDir, ownerRuntime, ownerRegistry } = fixture;
 
 		const providerId = "pi-crew-native-test";
 		const modelId = "native-model";
 		const faux = createFauxCore({ provider: providerId, models: [{ id: modelId }] });
 		faux.setResponses([(context) => {
 			assert.deepEqual(context.tools?.map((tool) => tool.name).sort(), [
-				"bash", "edit", "find", "grep", "ls", "powershell", "read", "write",
-			]);
-			return fauxAssistantMessage("native child prompt succeeded");
+				"bash", CREW_REPORT_TOOL_NAME, "edit", "find", "grep", "ls", "powershell", "read", "write",
+			].sort());
+			return completedReport("native child prompt succeeded", "native-report");
 		}]);
 		const refreshNetworkValues: boolean[] = [];
 		const receivedKeys: Array<string | undefined> = [];
-		const provider: Provider = {
-			id: providerId,
-			name: "Native test provider",
-			auth: {
-				apiKey: {
-					name: "Native test API key",
-					resolve: async ({ credential }) => credential?.key
-						? { auth: { apiKey: credential.key } }
-						: undefined,
-				},
-			},
-			getModels: () => faux.models,
+		const provider = nativeFauxProvider(providerId, faux, {
 			refreshModels: async ({ allowNetwork }) => {
 				refreshNetworkValues.push(allowNetwork);
 			},
-			stream: (model, context) => faux.stream(model, context),
 			streamSimple: (model, context, options) => {
 				receivedKeys.push(options?.apiKey);
 				return faux.streamSimple(model, context, options);
 			},
-		};
-
-		const ownerRuntime = await ModelRuntime.create({
-			authPath: join(agentDir, "auth.json"),
-			modelsPath: join(agentDir, "models.json"),
-			allowModelNetwork: false,
 		});
-		const ownerRegistry = new ModelRegistry(ownerRuntime);
+
 		ownerRegistry.registerProvider(provider);
 		await ownerRuntime.setRuntimeApiKey(providerId, RUNTIME_KEY);
 		await new Promise<void>((resolve) => setImmediate(resolve));
 		refreshNetworkValues.length = 0;
 
-		const agentConfig: AgentConfig = {
-			name: "native-sdk-test",
-			description: "Native SDK bootstrap test",
-			systemPrompt: "Reply using the native provider.",
-			filePath: join(agentDir, "agents", "native-sdk-test.md"),
+		const agentConfig = agentConfigFor(agentDir, "native-sdk-test", {
 			model: `${providerId}/${modelId}`,
 			parsedModel: { provider: providerId, modelId },
-			compaction: false,
-		};
-		const state: SubagentState = {
-			id: "native-sdk-test-1",
-			toolFailureCount: 0,
-			activeToolCallIds: new Set(),
-			startedAt: 0,
-			agentConfig,
+			tools: undefined,
+		});
+		const state = createState("native-sdk-test-1", agentConfig, {
 			task: task("Run the native test response"),
 			brief: "Native SDK bootstrap",
-			status: "running",
 			ownerSessionId: "owner-native-test",
-			session: null,
-			inputTokens: 0,
-			outputTokens: 0,
-			cost: 0,
-			model: undefined,
-			thinking: undefined,
-			toolCallCount: 0,
-			toolActivities: [],
-		};
-
-		let settle!: (value: { status: string; result?: string; error?: string }) => void;
-		const settled = new Promise<{ status: string; result?: string; error?: string }>((resolve) => {
-			settle = resolve;
-		});
-		const runner = new SubagentSessionRunner({
-			isCurrent: (candidate) => candidate === state,
-			onProgress: () => {},
-			onToolStart: () => {},
-			onToolEnd: () => {},
-			onSettled: (_state, status, outcome) => settle({ status, ...outcome }),
-		});
-		t.after(async () => {
-			state.session?.dispose();
-			await rm(root, { recursive: true, force: true });
 		});
 
-		runner.start(state, {
-			cwd,
-			ctx: { model: undefined, modelRegistry: ownerRegistry, agentDir },
-			extensionResolvedPath: join(root, "pi-crew", "extension"),
+		const outcome = await runToSettlement(fixture, state);
+
+		assert.deepEqual(outcome, {
+			status: "completed",
+			result: { outcome: "completed", report: "native child prompt succeeded" },
 		});
-
-		let timeout: NodeJS.Timeout | undefined;
-		const outcome = await Promise.race([
-			settled,
-			new Promise<never>((_, reject) => {
-				timeout = setTimeout(() => reject(new Error("native subagent prompt timed out")), 5_000);
-			}),
-		]).finally(() => clearTimeout(timeout));
-
-		assert.deepEqual(outcome, { status: "done", result: "native child prompt succeeded" });
 		assert.equal(faux.state.callCount, 1);
 		assert.deepEqual(receivedKeys, [RUNTIME_KEY]);
 		assert.ok(refreshNetworkValues.length > 0);
@@ -460,81 +533,34 @@ export default function (pi) {
 	});
 
 	it("surfaces child credential synchronization failures without retrying the mutation", async (t) => {
-		const root = await mkdtemp(join(tmpdir(), "pi-crew-credential-sync-"));
-		const cwd = join(root, "repo");
-		const agentDir = join(root, "agent");
-		await Promise.all([mkdir(cwd), mkdir(agentDir)]);
+		const fixture = await createSdkFixture(t, "pi-crew-credential-sync-");
+		const { agentDir, ownerRuntime, ownerRegistry } = fixture;
 
 		const providerId = "pi-crew-sync-failure-test";
 		const modelId = "sync-model";
 		const faux = createFauxCore({ provider: providerId, models: [{ id: modelId }] });
 		let failRefresh = false;
 		let failedRefreshes = 0;
-		const provider: Provider = {
-			id: providerId,
-			name: "Credential sync failure provider",
-			auth: {
-				apiKey: {
-					name: "Credential sync test API key",
-					resolve: async ({ credential }) => credential?.key
-						? { auth: { apiKey: credential.key } }
-						: undefined,
-				},
-			},
-			getModels: () => faux.models,
+		const provider = nativeFauxProvider(providerId, faux, {
 			refreshModels: async () => {
 				if (!failRefresh) return;
 				failedRefreshes++;
 				throw new Error("native catalog unavailable");
 			},
-			stream: (model, context) => faux.stream(model, context),
-			streamSimple: faux.streamSimple,
-		};
-
-		const ownerRuntime = await ModelRuntime.create({
-			authPath: join(agentDir, "auth.json"),
-			modelsPath: join(agentDir, "models.json"),
-			allowModelNetwork: false,
 		});
-		const ownerRegistry = new ModelRegistry(ownerRuntime);
+
 		ownerRegistry.registerProvider(provider);
 		await ownerRuntime.setRuntimeApiKey(providerId, RUNTIME_KEY);
 		await new Promise<void>((resolve) => setImmediate(resolve));
 		failRefresh = true;
 
-		const agentConfig: AgentConfig = {
-			name: "sync-failure-test",
-			description: "Credential synchronization failure test",
-			systemPrompt: "Do not run when credential synchronization fails.",
-			filePath: join(agentDir, "agents", "sync-failure-test.md"),
+		const agentConfig = agentConfigFor(agentDir, "sync-failure-test", {
 			model: `${providerId}/${modelId}`,
 			parsedModel: { provider: providerId, modelId },
-			tools: [],
-			compaction: false,
-		};
+		});
 		const state = createState("sync-failure-test-1", agentConfig);
-		let settle!: (value: { status: string; result?: string; error?: string }) => void;
-		const settled = new Promise<{ status: string; result?: string; error?: string }>((resolve) => {
-			settle = resolve;
-		});
-		const runner = new SubagentSessionRunner({
-			isCurrent: (candidate) => candidate === state,
-			onProgress: () => {},
-			onToolStart: () => {},
-			onToolEnd: () => {},
-			onSettled: (_state, status, outcome) => settle({ status, ...outcome }),
-		});
-		t.after(async () => {
-			state.session?.dispose();
-			await rm(root, { recursive: true, force: true });
-		});
 
-		runner.start(state, {
-			cwd,
-			ctx: { model: undefined, modelRegistry: ownerRegistry, agentDir },
-			extensionResolvedPath: join(root, "pi-crew", "extension"),
-		});
-		const outcome = await settled;
+		const outcome = await runToSettlement(fixture, state);
 
 		assert.deepEqual(outcome, {
 			status: "error",
@@ -542,18 +568,11 @@ export default function (pi) {
 		});
 		assert.ok(failedRefreshes > 0);
 		assert.equal(faux.state.callCount, 0);
-		assert.equal(state.session, null);
+		assert.equal(state.sessionFile, undefined);
 	});
 
 	it("aborts credential and model bootstrap work before a child session exists", async () => {
-		const agentConfig: AgentConfig = {
-			name: "bootstrap-abort-test",
-			description: "Bootstrap cancellation test",
-			systemPrompt: "Do not prompt after cancellation.",
-			filePath: "/agents/bootstrap-abort-test.md",
-			tools: [],
-			compaction: false,
-		};
+		const agentConfig = agentConfigFor("/", "bootstrap-abort-test");
 		const state = createState("bootstrap-abort-test-1", agentConfig);
 		const settled: string[] = [];
 		let bootstrapSignal: AbortSignal | undefined;
@@ -562,13 +581,7 @@ export default function (pi) {
 			markBootstrapStarted = resolve;
 		});
 		const runner = new SubagentSessionRunner(
-			{
-				isCurrent: (candidate) => candidate === state,
-				onProgress: () => {},
-				onToolStart: () => {},
-				onToolEnd: () => {},
-				onSettled: (_state, status) => settled.push(status),
-			},
+			stateCallbacks({ onSettled: (_state, settlement) => settled.push(settlement.status) }),
 			{
 				bootstrap: async ({ signal }) => {
 					bootstrapSignal = signal;
@@ -580,18 +593,318 @@ export default function (pi) {
 			},
 		);
 
-		runner.start(state, {
-			cwd: "/repo",
-			ctx: { model: undefined, modelRegistry: {} as never, agentDir: "/agent" },
-			extensionResolvedPath: "/pkg/extension",
-		});
+		startWithStubBootstrap(runner, state);
 		await bootstrapStarted;
 		runner.abort(state);
-		state.status = "aborted";
+		state.lifecycle = { status: "aborted" };
 		await new Promise<void>((resolve) => setImmediate(resolve));
 
 		assert.equal(bootstrapSignal?.aborted, true);
-		assert.equal(state.session, null);
+		assert.equal(state.sessionFile, undefined);
 		assert.deepEqual(settled, []);
+	});
+
+	it("disposes a session that finishes bootstrapping after the subagent was disposed", async () => {
+		const agentConfig = agentConfigFor("/", "stale-bootstrap-test");
+		const state = createState("stale-bootstrap-test-1", agentConfig);
+		const settled: string[] = [];
+		let disposed = false;
+		let prompted = false;
+		let releaseBootstrap!: () => void;
+		const bootstrapReleased = new Promise<void>((resolve) => {
+			releaseBootstrap = resolve;
+		});
+		let markBootstrapStarted!: () => void;
+		const bootstrapStarted = new Promise<void>((resolve) => {
+			markBootstrapStarted = resolve;
+		});
+		const session = {
+			dispose: () => {
+				disposed = true;
+			},
+			prompt: async () => {
+				prompted = true;
+			},
+			subscribe: () => () => {},
+			setSessionName: () => {},
+			messages: [],
+		};
+		const runner = new SubagentSessionRunner(
+			stateCallbacks({ onSettled: (_state, settlement) => settled.push(settlement.status) }),
+			{
+				bootstrap: async () => {
+					markBootstrapStarted();
+					await bootstrapReleased;
+					return { session: session as never, warnings: [] };
+				},
+			},
+		);
+
+		startWithStubBootstrap(runner, state);
+		await bootstrapStarted;
+		runner.dispose(state);
+		releaseBootstrap();
+		await new Promise<void>((resolve) => setImmediate(resolve));
+
+		assert.equal(disposed, true);
+		assert.equal(prompted, false);
+		assert.equal(state.sessionFile, undefined);
+		assert.deepEqual(settled, []);
+	});
+
+	it("settles with an error when responding without an attached session", () => {
+		const agentConfig = agentConfigFor("/", "no-session-test");
+		const state = createState("no-session-test-1", agentConfig);
+		const settlements: SubagentSettlement[] = [];
+		const runner = new SubagentSessionRunner(
+			stateCallbacks({ onSettled: (_state, settlement) => settlements.push(settlement) }),
+		);
+
+		runner.respond(state, "follow up");
+
+		assert.deepEqual(settlements, [{ status: "error", error: `Subagent "no-session-test-1" has no active session` }]);
+	});
+
+	it("settles a prompt cycle once even when the settlement callback throws", async () => {
+		const agentConfig = agentConfigFor("/", "throwing-settle-test");
+		const state = createState("throwing-settle-test-1", agentConfig);
+		const settlements: SubagentSettlement[] = [];
+		const reportCall = {
+			type: "toolCall" as const,
+			id: "throwing-report",
+			name: CREW_REPORT_TOOL_NAME,
+			arguments: { outcome: "completed", report: "Reported once" },
+		};
+		const session = {
+			messages: [] as unknown[],
+			dispose: () => {},
+			prompt: async function () {
+				this.messages.push(
+					{ role: "assistant", content: [reportCall], stopReason: "toolUse" },
+					{
+						role: "toolResult",
+						toolCallId: reportCall.id,
+						toolName: CREW_REPORT_TOOL_NAME,
+						content: [{ type: "text", text: "Final subagent report recorded." }],
+						isError: false,
+					},
+				);
+			},
+			subscribe: () => () => {},
+			setSessionName: () => {},
+		};
+		const runner = new SubagentSessionRunner(
+			stateCallbacks({
+				onSettled: (_state, settlement) => {
+					settlements.push(settlement);
+					throw new Error("delivery failed");
+				},
+			}),
+			{ bootstrap: async () => ({ session: session as never, warnings: [] }) },
+		);
+
+		startWithStubBootstrap(runner, state);
+		await new Promise<void>((resolve) => setImmediate(resolve));
+
+		assert.deepEqual(settlements, [{
+			status: "completed",
+			result: { outcome: "completed", report: "Reported once" },
+		}]);
+	});
+});
+
+describe("universal subagent result protocol", () => {
+	it("accepts a native normalized completed report with needs null without a reminder", async (t) => {
+		const harness = await createProtocolHarness(t, [
+			fauxAssistantMessage(fauxToolCall(CREW_REPORT_TOOL_NAME, {
+				outcome: "completed",
+				report: "Normalized report",
+				needs: null,
+			}, { id: "normalized-null-report" })),
+		]);
+
+		assert.deepEqual(await harness.start(), {
+			status: "completed",
+			result: { outcome: "completed", report: "Normalized report" },
+		});
+		assert.equal(harness.faux.state.callCount, 1);
+		assert.equal(reminderCount(harness.contexts), 0);
+	});
+
+	it("sends one reminder before settlement and recovers with a final report", async (t) => {
+		let harness!: Awaited<ReturnType<typeof createProtocolHarness>>;
+		const responses: FauxResponseStep[] = [
+			fauxAssistantMessage("I forgot the report."),
+			(context) => {
+				assert.equal(harness.settlements.length, 0);
+				const reminders = context.messages.filter((message) => {
+					if (message.role !== "user") return false;
+					if (typeof message.content === "string") return message.content === CREW_REPORT_REMINDER;
+					return message.content.some((part) => part.type === "text" && part.text === CREW_REPORT_REMINDER);
+				});
+				assert.equal(reminders.length, 1);
+				return completedReport("Recovered report", "recovery-report");
+			},
+		];
+		harness = await createProtocolHarness(t, responses);
+
+		assert.deepEqual(await harness.start(), {
+			status: "completed",
+			result: { outcome: "completed", report: "Recovered report" },
+		});
+		assert.equal(harness.faux.state.callCount, 2);
+		assert.equal(harness.settlements.length, 1);
+		assert.equal(reminderCount(harness.contexts), 1);
+	});
+
+	it("invalidates an accepted report when another extension continues the same prompt", async (t) => {
+		const getUserTexts = (context: Context) => context.messages.flatMap((message) => {
+			if (message.role !== "user") return [];
+			if (typeof message.content === "string") return [message.content];
+			return message.content.filter((part) => part.type === "text").map((part) => part.text);
+		});
+		const harness = await createProtocolHarness(t, [
+			completedReport("Report before external continuation", "pre-continuation-report"),
+			fauxAssistantMessage("The terminating tool batch completed."),
+			(context) => {
+				assert.ok(getUserTexts(context).includes("Run one more continuation after the report."));
+				return fauxAssistantMessage("The external continuation ended without a report.");
+			},
+			(context) => {
+				assert.ok(getUserTexts(context).includes(CREW_REPORT_REMINDER));
+				return completedReport("Report after external continuation", "post-continuation-report");
+			},
+		], { queueAfterFirstReport: true });
+
+		assert.deepEqual(await harness.start(), {
+			status: "completed",
+			result: { outcome: "completed", report: "Report after external continuation" },
+		});
+		assert.equal(harness.faux.state.callCount, 4);
+	});
+
+	it("returns one contract error after the reminder without making a third model call", async (t) => {
+		const harness = await createProtocolHarness(t, [
+			fauxAssistantMessage("Missing report one."),
+			fauxAssistantMessage("Missing report two."),
+			completedReport("Must not run", "third-report"),
+		]);
+
+		const outcome = await harness.start();
+		assert.equal(outcome.status, "error");
+		assert.match(outcome.error ?? "", /contract violated.*after one reminder/);
+		assert.equal(harness.faux.state.callCount, 2);
+		assert.equal(harness.settlements.length, 1);
+		assert.equal(reminderCount(harness.contexts), 1);
+	});
+
+	it("rejects a non-final report but accepts task tools followed by one final reporter", async (t) => {
+		const harness = await createProtocolHarness(t, [
+			fauxAssistantMessage([
+				fauxToolCall(CREW_REPORT_TOOL_NAME, { outcome: "completed", report: "Too early" }, { id: "early-report" }),
+				fauxToolCall("read", { path: "fixture.txt" }, { id: "early-read" }),
+			]),
+			fauxAssistantMessage("Continued after the mixed batch."),
+			completedReport("Final after reminder", "final-after-mixed"),
+		], { tools: ["read"] });
+
+		assert.deepEqual(await harness.start(), {
+			status: "completed",
+			result: { outcome: "completed", report: "Final after reminder" },
+		});
+		assert.equal(harness.faux.state.callCount, 3);
+
+		const cleanHarness = await createProtocolHarness(t, [
+			fauxAssistantMessage(fauxToolCall("read", { path: "fixture.txt" }, { id: "task-read" })),
+			completedReport("Task then final", "task-final-report"),
+		], { tools: ["read"] });
+		assert.deepEqual(await cleanHarness.start(), {
+			status: "completed",
+			result: { outcome: "completed", report: "Task then final" },
+		});
+		assert.equal(cleanHarness.faux.state.callCount, 2);
+	});
+
+	it("does not remind after technical error or abort", async (t) => {
+		for (const stopReason of ["error", "aborted"] as const) {
+			const harness = await createProtocolHarness(t, [
+				fauxAssistantMessage("technical stop", {
+					stopReason,
+					errorMessage: stopReason === "error" ? "invalid request" : "cancelled",
+				}),
+				completedReport("Must not run", `${stopReason}-unexpected-report`),
+			]);
+			const outcome = await harness.start();
+			assert.equal(outcome.status, stopReason);
+			assert.equal(outcome.error, stopReason === "error" ? "invalid request" : "cancelled");
+			assert.equal(harness.faux.state.callCount, 1);
+			assert.equal(reminderCount(harness.contexts), 0);
+		}
+	});
+
+	it("does not carry an old report into respond cycles and renews the reminder once per respond", async (t) => {
+		const harness = await createProtocolHarness(t, [
+			completedReport("Initial report", "initial-report"),
+			fauxAssistantMessage("First respond forgot."),
+			completedReport("First respond recovered", "first-respond-report"),
+			fauxAssistantMessage("Second respond forgot."),
+			completedReport("Second respond recovered", "second-respond-report"),
+		]);
+
+		assert.deepEqual((await harness.start()).result, { outcome: "completed", report: "Initial report" });
+		assert.deepEqual((await harness.respond("First follow-up")).result, {
+			outcome: "completed",
+			report: "First respond recovered",
+		});
+		assert.deepEqual((await harness.respond("Second follow-up")).result, {
+			outcome: "completed",
+			report: "Second respond recovered",
+		});
+		assert.equal(harness.faux.state.callCount, 5);
+		assert.equal(reminderCount(harness.contexts), 2);
+	});
+
+	it("preserves multiline report and needs strings exactly", async (t) => {
+		const report = "## Findings\n\n- first\n- second\n";
+		const needs = "Choose one:\n\n1. Alpha\n2. Beta\n";
+		const harness = await createProtocolHarness(t, [
+			fauxAssistantMessage(fauxToolCall(CREW_REPORT_TOOL_NAME, {
+				outcome: "needs_input",
+				report,
+				needs,
+			}, { id: "multiline-report" })),
+		]);
+
+		assert.deepEqual(await harness.start(), {
+			status: "needs_input",
+			result: { outcome: "needs_input", report, needs },
+		});
+	});
+
+	it("rejects unknown and conditionally invalid fields", async (t) => {
+		const invalidCalls = [
+			{ outcome: "completed", report: "  \n" },
+			{ outcome: "completed", report: "Has forbidden needs", needs: "not allowed" },
+			{ outcome: "needs_input", report: "Missing needs" },
+			{ outcome: "needs_input", report: "Blank needs", needs: "  \n" },
+			{ outcome: "completed", report: "Unknown field", extra: true },
+		];
+		for (const [index, args] of invalidCalls.entries()) {
+			let invalidWasRejected = false;
+			const harness = await createProtocolHarness(t, [
+				fauxAssistantMessage(fauxToolCall(CREW_REPORT_TOOL_NAME, args, { id: `invalid-${index}` })),
+				(context) => {
+					const result = context.messages.at(-1);
+					invalidWasRejected = result?.role === "toolResult" && result.isError;
+					return completedReport(`Recovered ${index}`, `valid-${index}`);
+				},
+			]);
+			assert.deepEqual((await harness.start()).result, {
+				outcome: "completed",
+				report: `Recovered ${index}`,
+			});
+			assert.equal(invalidWasRejected, true);
+			assert.equal(harness.faux.state.callCount, 2);
+		}
 	});
 });

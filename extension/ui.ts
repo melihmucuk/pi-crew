@@ -7,144 +7,60 @@ import {
 	getMarkdownTheme,
 	rawKeyHint,
 } from "@earendil-works/pi-coding-agent";
-import { Box, type Component, Markdown, Text, truncateToWidth } from "@earendil-works/pi-tui";
+import { Box, type Component, Markdown, Spacer, Text, truncateToWidth } from "@earendil-works/pi-tui";
 import type { ActiveAgentSummary, CrewRuntime } from "./crew.js";
+import type { CrewAbortEntryData, StoredCrewResultMessageDetails } from "./delivery.js";
+import { formatCost, formatDuration, formatModelLabel, formatTokens } from "./format.js";
+import { SUBAGENT_OUTCOME } from "./subagent-result.js";
+import {
+	SUBAGENT_STATUS,
+	SUBAGENT_TOOL_STATUS,
+	isSubagentStatusPhase,
+	type SubagentStatus,
+	type SubagentToolStatus,
+} from "./subagent-status.js";
 import { sanitizeInline } from "./tool-activity.js";
-
-export type SendMessageFn = ExtensionAPI["sendMessage"];
-type Message = Parameters<SendMessageFn>[0];
 
 type ToolTheme = Parameters<Exclude<Parameters<ExtensionAPI["registerTool"]>[0]["renderCall"], undefined>>[1];
 export type ToolResult = AgentToolResult<unknown>;
 
-export type SubagentStatus = "running" | "waiting" | "done" | "error" | "aborted";
-
-export const STATUS_ICON: Record<SubagentStatus, string> = {
-	running: "⏳",
-	waiting: "⏳",
-	done: "✅",
-	error: "❌",
-	aborted: "⏹️",
+export type SubagentStatusPresentation = {
+	icon: string;
+	label: string;
+	color: "success" | "warning" | "error" | "muted";
 };
 
-export const STATUS_LABEL: Record<SubagentStatus, string> = {
-	running: "running",
-	waiting: "waiting for response",
-	done: "done",
-	error: "failed",
-	aborted: "aborted",
+const SUBAGENT_STATUS_PRESENTATION = {
+	[SUBAGENT_STATUS.running]: { icon: "⏳", label: "running", color: "warning" },
+	[SUBAGENT_STATUS.completed]: { icon: "✅", label: "completed", color: "success" },
+	[SUBAGENT_STATUS.needsInput]: { icon: "⏳", label: "needs input", color: "warning" },
+	[SUBAGENT_STATUS.error]: { icon: "❌", label: "failed", color: "error" },
+	[SUBAGENT_STATUS.aborted]: { icon: "⏹", label: "aborted", color: "error" },
+} as const satisfies Record<SubagentStatus, SubagentStatusPresentation>;
+
+/** Stored messages from older sessions can carry a status that no longer exists. */
+export function getSubagentStatusPresentation(status: string): SubagentStatusPresentation {
+	return SUBAGENT_STATUS_PRESENTATION[status as SubagentStatus]
+		?? { icon: "❓", label: status || "unknown", color: "muted" };
+}
+
+type SubagentToolStatusPresentation = {
+	color: "success" | "error" | "muted";
+	showsResult: boolean;
 };
 
-export interface SteeringPayload {
-	id: string;
-	agentName: string;
-	sessionFile?: string;
-	status: SubagentStatus;
-	result?: string;
-	error?: string;
-}
-
-export interface CrewResultMessageDetails {
-	agentId: string;
-	agentName: string;
-	sessionFile?: string;
-	status: SubagentStatus;
-	body?: string;
-}
+const SUBAGENT_TOOL_STATUS_PRESENTATION = {
+	[SUBAGENT_TOOL_STATUS.running]: { color: "muted", showsResult: false },
+	[SUBAGENT_TOOL_STATUS.done]: { color: "success", showsResult: true },
+	[SUBAGENT_TOOL_STATUS.error]: { color: "error", showsResult: false },
+} as const satisfies Record<SubagentToolStatus, SubagentToolStatusPresentation>;
 
 export function getCrewResultTitle(details: {
 	agentId: string;
-	agentName: string;
-	status: SubagentStatus;
+	brief?: string;
 }): string {
-	return `Subagent '${details.agentName}' (${details.agentId}) ${STATUS_LABEL[details.status]}`;
-}
-
-function sendWithDeliveryPolicy(
-	message: Message,
-	sendMessage: SendMessageFn,
-	opts: { isIdle: boolean; triggerTurn: boolean },
-): void {
-	sendMessage(
-		message,
-		opts.isIdle
-			? { triggerTurn: opts.triggerTurn }
-			: { deliverAs: "steer", triggerTurn: opts.triggerTurn },
-	);
-}
-
-function getSteeringBody(payload: SteeringPayload): string | undefined {
-	return (payload.status === "error" || payload.status === "aborted")
-		? (payload.error ?? payload.result)
-		: (payload.result ?? payload.error);
-}
-
-export function sendSteeringMessage(
-	payload: SteeringPayload,
-	sendMessage: SendMessageFn,
-	opts: { isIdle: boolean; triggerTurn: boolean },
-): void {
-	const body = getSteeringBody(payload);
-	const title = getCrewResultTitle({ agentId: payload.id, agentName: payload.agentName, status: payload.status });
-	const content = body
-		? `**${STATUS_ICON[payload.status]} ${title}**\n\n${body}`
-		: `**${STATUS_ICON[payload.status]} ${title}**`;
-
-	sendWithDeliveryPolicy(
-		{
-			customType: "crew-result",
-			content,
-			display: true,
-			details: {
-				agentId: payload.id,
-				agentName: payload.agentName,
-				sessionFile: payload.sessionFile,
-				status: payload.status,
-				body,
-			} satisfies CrewResultMessageDetails,
-		},
-		sendMessage,
-		opts,
-	);
-}
-
-export function sendCrewListActiveWarning(
-	sendMessage: SendMessageFn,
-	opts: { isIdle: boolean; triggerTurn: boolean },
-): void {
-	sendWithDeliveryPolicy(
-		{
-			customType: "crew-list-warning",
-			content: "⚠ Active subagents detected. Do not poll crew_list; results arrive automatically.",
-			display: true,
-		},
-		sendMessage,
-		opts,
-	);
-}
-
-function getStatusColor(status: CrewResultMessageDetails["status"]): "success" | "error" | "warning" | "muted" {
-	switch (status) {
-		case "done":
-			return "success";
-		case "error":
-		case "aborted":
-			return "error";
-		case "running":
-		case "waiting":
-			return "warning";
-		default:
-			return "muted";
-	}
-}
-
-type MessageRenderer = Parameters<ExtensionAPI["registerMessageRenderer"]>[1];
-type MessageRendererTheme = Parameters<MessageRenderer>[2];
-
-function renderWarningMessage(content: unknown, theme: MessageRendererTheme, outputPad: number): Box {
-	const box = new Box(outputPad, 1, (text) => theme.bg("customMessageBg", text));
-	box.addChild(new Text(theme.fg("warning", String(content ?? "")), 0, 0));
-	return box;
+	const brief = sanitizeInline(details.brief ?? "");
+	return brief ? `${details.agentId} · ${brief}` : details.agentId;
 }
 
 function linkFilePath(filePath: string): string {
@@ -152,26 +68,28 @@ function linkFilePath(filePath: string): string {
 	return `\x1b]8;;${url}\x07${filePath}\x1b]8;;\x07`;
 }
 
+function getResultMarkdown(details: StoredCrewResultMessageDetails): string | undefined {
+	if (details.result?.outcome === SUBAGENT_OUTCOME.needsInput) {
+		return `## Needs\n\n${details.result.needs}\n\n${details.result.report}`;
+	}
+	return details.result?.report ?? details.error ?? details.body;
+}
+
 export function registerCrewMessageRenderers(pi: ExtensionAPI): void {
 	pi.registerMessageRenderer("crew-result", (message, { expanded, outputPad }, theme) => {
-		const details = message.details as CrewResultMessageDetails | undefined;
+		const details = message.details as StoredCrewResultMessageDetails | undefined;
+		const presentation = details ? getSubagentStatusPresentation(details.status) : undefined;
 		const title = details ? getCrewResultTitle(details) : "Subagent update";
-		const icon = details
-			? theme.fg(getStatusColor(details.status), STATUS_ICON[details.status])
-			: theme.fg("muted", "ℹ");
+		const icon = presentation ? theme.fg(presentation.color, presentation.icon) : theme.fg("muted", "ℹ");
 		const header = `${icon} ${theme.fg("toolTitle", theme.bold(title))}`;
-		const body = details?.body ?? (!details && message.content ? String(message.content) : undefined);
+		const body = details ? getResultMarkdown(details) : undefined;
 
 		const box = new Box(outputPad, 1, (text) => theme.bg("customMessageBg", text));
 		box.addChild(new Text(header, 0, 0));
 
-		if (details?.sessionFile) {
-			box.addChild(new Text(theme.fg("muted", `📁 ${linkFilePath(details.sessionFile)}`), 0, 0));
-		}
-
 		if (body) {
+			box.addChild(new Spacer());
 			if (expanded) {
-				box.addChild(new Text("", 0, 0));
 				box.addChild(new Markdown(body, 0, 0, getMarkdownTheme()));
 			} else {
 				const lines = body.split("\n");
@@ -181,10 +99,29 @@ export function registerCrewMessageRenderers(pi: ExtensionAPI): void {
 			}
 		}
 
+		if (expanded && details?.sessionFile) {
+			box.addChild(new Spacer());
+			box.addChild(new Text(theme.fg("muted", `📁 ${linkFilePath(details.sessionFile)}`), 0, 0));
+		}
+
 		return box;
 	});
 
-	pi.registerMessageRenderer("crew-list-warning", (message, { outputPad }, theme) => renderWarningMessage(message.content, theme, outputPad));
+	// Aborts never reach model context, so they only exist as TUI entries.
+	pi.registerEntryRenderer<CrewAbortEntryData>("crew-abort", (entry, _options, theme) => {
+		const data = entry.data;
+		if (!data) return undefined;
+		const presentation = getSubagentStatusPresentation(SUBAGENT_STATUS.aborted);
+		const title = getCrewResultTitle(data);
+		const box = new Box(1, 1, (text) => theme.bg("customMessageBg", text));
+		box.addChild(new Text(
+			`${theme.fg(presentation.color, presentation.icon)} ${theme.fg("toolTitle", theme.bold(title))}`,
+			0,
+			0,
+		));
+		if (data.error) box.addChild(new Text(theme.fg("dim", data.error), 0, 0));
+		return box;
+	});
 }
 
 export function renderCrewCall(
@@ -216,25 +153,6 @@ const EXPANDED_TOOL_CALL_LIMIT = 10;
 const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 const SPINNER_INTERVAL_MS = 80;
 
-function formatTokens(tokens: number): string {
-	if (tokens >= 1_000_000) return `${(tokens / 1_000_000).toFixed(1)}M`;
-	if (tokens >= 1_000) return `${(tokens / 1_000).toFixed(1)}k`;
-	return String(tokens);
-}
-
-function formatCost(cost: number): string {
-	if (cost === 0 || cost >= 0.01) return `$${cost.toFixed(2)}`;
-	return `$${cost.toFixed(4)}`;
-}
-
-function formatDuration(milliseconds: number): string {
-	const seconds = Math.max(0, Math.floor(milliseconds / 1_000));
-	if (seconds < 60) return `${seconds}s`;
-	const minutes = Math.floor(seconds / 60);
-	const remainder = seconds % 60;
-	return remainder === 0 ? `${minutes}m` : `${minutes}m ${remainder}s`;
-}
-
 function toolCallLabel(count: number): string {
 	return `${count} tool call${count === 1 ? "" : "s"}`;
 }
@@ -247,16 +165,22 @@ export class CrewWidgetComponent implements Component {
 	private agents: ActiveAgentSummary[] = [];
 	private expanded = false;
 	private frame = "";
+	private showToolCalls = true;
 
 	constructor(
 		private readonly theme: Theme,
 		private readonly formatKeyHint: (key: string, description: string) => string = rawKeyHint,
 	) {}
 
-	setState(agents: ActiveAgentSummary[], frame: string, expanded: boolean): void {
+	setState(agents: ActiveAgentSummary[], frame: string, expanded: boolean, showToolCalls = true): void {
 		this.agents = agents;
 		this.frame = frame;
 		this.expanded = expanded;
+		this.showToolCalls = showToolCalls;
+	}
+
+	setFrame(frame: string): void {
+		this.frame = frame;
 	}
 
 	render(width: number): string[] {
@@ -264,42 +188,45 @@ export class CrewWidgetComponent implements Component {
 		const lines: string[] = [];
 		for (const [index, agent] of this.agents.entries()) {
 			if (index > 0) lines.push("");
-			const model = sanitizeInline(agent.model ?? "…");
+			const model = sanitizeInline(formatModelLabel(agent.model, agent.modelName) ?? "…");
 			const agentId = sanitizeInline(agent.id);
 			const brief = sanitizeInline(agent.brief ?? "") || sanitizeInline(agent.agentName);
-			const icon = agent.status === "waiting" ? "⏳" : this.frame;
-			const activities = agent.toolActivities;
+			const inFlight = isSubagentStatusPhase(agent.status, "in-flight");
+			const icon = inFlight ? this.frame : getSubagentStatusPresentation(agent.status).icon;
 			const limit = this.expanded ? EXPANDED_TOOL_CALL_LIMIT : COMPACT_TOOL_CALL_LIMIT;
-			const visibleActivities = activities.slice(-limit);
-			const toggleAction = this.expanded ? "collapse" : "details";
-			const duration = formatDuration(Date.now() - agent.startedAt);
-			const showing = agent.toolCallCount > limit ? ` · showing latest ${limit}` : "";
+			const visibleActivities = agent.toolActivities.slice(-limit);
 			const failures = failureLabel(agent.toolFailureCount);
-			const status = agent.status === "waiting" ? "waiting for response" : `${STATUS_LABEL[agent.status]} ${duration}`;
 			const header = this.theme.fg("warning", icon) + " "
 				+ this.theme.fg("toolTitle", this.theme.bold(agentId))
-				+ this.theme.fg("muted", ` - ${brief}`)
-				+ this.theme.fg("dim", " | ")
-				+ this.formatKeyHint(CREW_WIDGET_TOGGLE_SHORTCUT, `to ${toggleAction}`);
+				+ this.theme.fg("muted", ` - ${brief}`);
 			const usage = `  ${model} · ${agent.thinking ?? "…"} | ↑ ${formatTokens(agent.inputTokens)} · ↓ ${formatTokens(agent.outputTokens)} · ${formatCost(agent.cost)}`;
-			const progress = this.theme.fg(
-				"muted",
-				`  ${status} · ${toolCallLabel(agent.toolCallCount)}${failures ? ` · ${failures}` : ""}${showing}`,
-			);
+			const progress = `  ${formatDuration(agent.workedMs)} · ${toolCallLabel(agent.toolCallCount)}${failures ? ` · ${failures}` : ""}`;
 			lines.push(truncateToWidth(header, width, "…"));
 			lines.push(truncateToWidth(this.theme.fg("muted", usage), width, "…"));
-			lines.push(truncateToWidth(progress, width, "…"));
-			if (activities.length > 0) lines.push(truncateToWidth(this.theme.fg("dim", "  ---"), width, "…"));
-			for (const tool of visibleActivities) {
-				const color = tool.status === "error" ? "error" : tool.status === "done" ? "success" : "muted";
-				const target = sanitizeInline(tool.target);
-				const name = sanitizeInline(tool.name) === "bash" ? "$" : sanitizeInline(tool.name);
-				const result = tool.status === "done" && tool.resultSummary ? ` · ${sanitizeInline(tool.resultSummary)}` : "";
-				const action = "  " + this.theme.fg(color, name)
-					+ (target ? this.theme.fg("muted", `  ${target}`) : "")
-					+ (result ? this.theme.fg("accent", result) : "");
-				lines.push(truncateToWidth(action, width, "…"));
+			lines.push(truncateToWidth(this.theme.fg("muted", progress), width, "…"));
+			if (this.showToolCalls) {
+				for (const tool of visibleActivities) {
+					const presentation = SUBAGENT_TOOL_STATUS_PRESENTATION[tool.status];
+					const target = sanitizeInline(tool.target);
+					const name = sanitizeInline(tool.name) === "bash" ? "$" : sanitizeInline(tool.name);
+					const result = presentation.showsResult && tool.resultSummary ? ` · ${sanitizeInline(tool.resultSummary)}` : "";
+					const action = "    " + this.theme.fg(presentation.color, name)
+						+ (target ? this.theme.fg("muted", `  ${target}`) : "")
+						+ (result ? this.theme.fg("accent", result) : "");
+					lines.push(truncateToWidth(action, width, "…"));
+				}
 			}
+		}
+		if (this.agents.length > 0 && this.showToolCalls) {
+			lines.push("");
+			lines.push(truncateToWidth(
+				this.theme.fg(
+					"dim",
+					`  ${this.formatKeyHint(CREW_WIDGET_TOGGLE_SHORTCUT, `to ${this.expanded ? "collapse" : "details"}`)}`,
+				),
+				width,
+				"…",
+			));
 		}
 		return lines;
 	}
@@ -315,80 +242,95 @@ interface WidgetState {
 	timer: ReturnType<typeof setInterval>;
 	frameIndex: number;
 	expanded: boolean;
-}
-
-let widget: WidgetState | undefined;
-
-function disposeWidget(state: WidgetState): void {
-	clearInterval(state.timer);
-	if (widget === state) widget = undefined;
-}
-
-function clearWidget(): void {
-	const current = widget;
-	if (!current) return;
-	disposeWidget(current);
-	current.ctx.ui.setWidget("crew-status", undefined);
+	agents: ActiveAgentSummary[];
 }
 
 function hasRunningAgent(agents: ActiveAgentSummary[]): boolean {
-	return agents.some((agent) => agent.status === "running");
+	return agents.some((agent) => isSubagentStatusPhase(agent.status, "in-flight"));
 }
 
-function syncWidgetText(state: WidgetState, agents: ActiveAgentSummary[]): void {
-	const frame = SPINNER_FRAMES[state.frameIndex % SPINNER_FRAMES.length];
-	state.component.setState(agents, frame, state.expanded);
-	state.tui.requestRender();
+function currentFrame(state: WidgetState): string {
+	return SPINNER_FRAMES[state.frameIndex % SPINNER_FRAMES.length];
 }
 
-export function updateWidget(ctx: ExtensionContext, crew: CrewRuntime, expanded = false): void {
-	if (ctx.mode !== "tui") {
-		clearWidget();
-		return;
-	}
+export interface CrewWidgetController {
+	update(ctx: ExtensionContext, crew: CrewRuntime, expanded?: boolean, showToolCalls?: boolean): void;
+}
 
-	const ownerSessionId = ctx.sessionManager.getSessionId();
-	const running = crew.getActiveSummariesForOwner(ownerSessionId);
-	if (running.length === 0) {
-		clearWidget();
-		return;
-	}
+export function createCrewWidgetController(): CrewWidgetController {
+	let widget: WidgetState | undefined;
 
-	if (widget && widget.ctx !== ctx) clearWidget();
-	if (widget) {
-		widget.expanded = expanded;
-		syncWidgetText(widget, running);
-		return;
-	}
+	const disposeWidget = (state: WidgetState): void => {
+		clearInterval(state.timer);
+		if (widget === state) widget = undefined;
+	};
 
-	ctx.ui.setWidget("crew-status", (tui, theme) => {
-		const component = new CrewWidgetComponent(theme);
-		const state: WidgetState = {
-			ctx,
-			component,
-			tui,
-			frameIndex: 0,
-			expanded,
-			timer: setInterval(() => {
-				const agents = crew.getActiveSummariesForOwner(ownerSessionId);
-				if (agents.length === 0) {
-					clearWidget();
-					return;
-				}
-				if (!hasRunningAgent(agents)) return;
-				state.frameIndex++;
-				syncWidgetText(state, agents);
-			}, SPINNER_INTERVAL_MS),
-		};
-		state.timer.unref();
+	const clearWidget = (): void => {
+		const current = widget;
+		if (!current) return;
+		disposeWidget(current);
+		current.ctx.ui.setWidget("crew-status", undefined);
+	};
 
-		widget = state;
-		syncWidgetText(state, running);
+	const pushAgents = (
+		state: WidgetState,
+		agents: ActiveAgentSummary[],
+		expanded: boolean,
+		showToolCalls: boolean,
+	): void => {
+		state.agents = agents;
+		state.expanded = expanded;
+		state.component.setState(agents, currentFrame(state), expanded, showToolCalls);
+		state.tui.requestRender();
+	};
 
-		return Object.assign(component, {
-			dispose() {
-				disposeWidget(state);
-			},
-		});
-	});
+	return {
+		update(ctx: ExtensionContext, crew: CrewRuntime, expanded = false, showToolCalls = true): void {
+			if (ctx.mode !== "tui") {
+				clearWidget();
+				return;
+			}
+
+			const active = crew.getActiveSummariesForOwner(ctx.sessionManager.getSessionId());
+			if (active.length === 0) {
+				clearWidget();
+				return;
+			}
+
+			if (widget && widget.ctx !== ctx) clearWidget();
+			if (widget) {
+				pushAgents(widget, active, expanded, showToolCalls);
+				return;
+			}
+
+			ctx.ui.setWidget("crew-status", (tui, theme) => {
+				const component = new CrewWidgetComponent(theme);
+				const state: WidgetState = {
+					ctx,
+					component,
+					tui,
+					frameIndex: 0,
+					expanded,
+					agents: active,
+					// The spinner timer only advances the animation; agent data arrives through update().
+					timer: setInterval(() => {
+						if (!hasRunningAgent(state.agents)) return;
+						state.frameIndex++;
+						state.component.setFrame(currentFrame(state));
+						state.tui.requestRender();
+					}, SPINNER_INTERVAL_MS),
+				};
+				state.timer.unref();
+
+				widget = state;
+				pushAgents(state, active, expanded, showToolCalls);
+
+				return Object.assign(component, {
+					dispose() {
+						disposeWidget(state);
+					},
+				});
+			});
+		},
+	};
 }
