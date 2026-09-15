@@ -105,3 +105,18 @@ The `widget` and `agents` fields are independent; a config file may contain eith
 `widget.showToolCalls` defaults to `true`. Setting it to `false` hides recent tool-activity rows and the details/collapse shortcut hint. Status, working time, tokens, cost, and call/failure totals remain visible. Tool execution and activity recording are unchanged.
 
 Project settings override global settings, and untrusted project config is not loaded. Config changes apply on `/reload`.
+
+## Herdr Integration
+
+Herdr sidebar reporting activates only in Pi's TUI mode when all required environment variables are present. These normally come from Herdr; there is no `pi-crew.json` setting for this integration.
+
+| Variable | Requirement | Purpose |
+| -------- | ----------- | ------- |
+| `HERDR_ENV` | Must equal `1` | Enables Herdr integration. |
+| `HERDR_PANE_ID` | Non-empty | Identifies the pane receiving metadata. |
+| `HERDR_SOCKET_PATH` | Non-empty | Herdr IPC socket, inherited by the Herdr CLI. |
+| `HERDR_BIN_PATH` | Optional | Herdr executable path; defaults to `herdr` on `PATH`. |
+
+The CLI must support `pane report-metadata`. Missing or incompatible binaries and reporting failures do not stop subagent work.
+
+The sidebar count includes running subagents across the process, including work preserved for inactive owner sessions. Subagents awaiting verification or input are not counted. Reporting changes only the display label, not Herdr's lifecycle status or Pi session identity.

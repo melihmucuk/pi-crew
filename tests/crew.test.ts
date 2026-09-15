@@ -145,6 +145,25 @@ describe("subagent session names", () => {
 });
 
 describe("CrewRuntime", () => {
+	it("observes running work across owners without counting waiting agents or tool activity", () => {
+		const { crew, runner } = setup();
+		const first = spawn(crew);
+		const counts: number[] = [];
+		const unsubscribe = crew.observeRunningCount((count) => counts.push(count));
+		const second = spawn(crew, "owner-2");
+		runner.startTool(first, "read-1", "read", "README.md");
+		runner.endTool(first, "read-1");
+		runner.settle(first, { status: "completed", result: completed("Done") });
+		runner.settle(second, { status: "needs_input", result: needsInput("Paused", "Which file?") });
+		crew.respond(first, "Check again", "owner-1");
+		crew.abort(first, { reason: "Cancelled" });
+		crew.done(second, "owner-2");
+		assert.deepEqual(counts, [1, 2, 1, 0, 1, 0]);
+		unsubscribe();
+		spawn(crew);
+		assert.deepEqual(counts, [1, 2, 1, 0, 1, 0]);
+	});
+
 	it("settles every successful result with its outcome and keeps it active", () => {
 		const { crew, runner, binding, sent } = setup();
 		crew.activateSession(binding);

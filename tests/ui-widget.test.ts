@@ -195,7 +195,7 @@ describe("crew widget controller", () => {
 		assert.equal(printHost.fetchCount, 0);
 	});
 
-	it("advances the spinner from the timer without re-fetching agents", () => {
+	it("refreshes live agent data and the spinner from the timer", () => {
 		mock.timers.enable({ apis: ["setInterval"] });
 		try {
 			const controller = createCrewWidgetController();
@@ -207,10 +207,12 @@ describe("crew widget controller", () => {
 			const fetchesAfterPush = h.fetchCount;
 			const rendersAfterPush = h.renderCount;
 
+			h.agents = [{ ...summary(3), workedMs: 342_000 }];
 			mock.timers.tick(80);
 
 			assert.match(h.render(), /^⠙ scout-1234/m);
-			assert.equal(h.fetchCount, fetchesAfterPush);
+			assert.match(h.render(), /^  5m 42s · 3 tool calls$/m);
+			assert.equal(h.fetchCount, fetchesAfterPush + 1);
 			assert.equal(h.renderCount, rendersAfterPush + 1);
 		} finally {
 			mock.timers.reset();
@@ -226,10 +228,12 @@ describe("crew widget controller", () => {
 
 			controller.update(h.ctx as never, h.crew as never);
 			const rendersAfterPush = h.renderCount;
+			const fetchesAfterPush = h.fetchCount;
 
 			mock.timers.tick(800);
 
 			assert.equal(h.renderCount, rendersAfterPush);
+			assert.equal(h.fetchCount, fetchesAfterPush);
 			assert.equal(h.clearCount, 0);
 		} finally {
 			mock.timers.reset();

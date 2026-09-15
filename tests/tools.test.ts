@@ -13,6 +13,15 @@ function text(result: { content: Array<{ type: string; text?: string }> }): stri
 	return result.content[0]?.text ?? "";
 }
 
+async function rejectsJsonError(action: () => Promise<unknown>, expected: RegExp): Promise<void> {
+	await assert.rejects(action, (error: Error) => {
+		const result = JSON.parse(error.message);
+		assert.deepEqual(Object.keys(result), ["error"]);
+		assert.match(result.error, expected);
+		return true;
+	});
+}
+
 const structuredTask = {
 	goal: "Package behavior is understood.",
 	context: ["The owner needs a focused package inspection."],
@@ -21,6 +30,7 @@ const structuredTask = {
 
 class FakeCrew {
 	active: ActiveAgentSummary[] = [];
+	activeOwnerIds: string[] = [];
 	spawnCalls: unknown[][] = [];
 	abortAllOwnedResult: string[] = [];
 	abortOwnedResult: AbortOwnedResult = { abortedIds: [], missingIds: [], foreignIds: [] };
@@ -48,7 +58,8 @@ class FakeCrew {
 		return { error: this.doneError };
 	}
 
-	getActiveSummariesForOwner(): ActiveAgentSummary[] {
+	getActiveSummariesForOwner(ownerSessionId?: string): ActiveAgentSummary[] {
+		this.activeOwnerIds.push(ownerSessionId ?? "");
 		return this.active;
 	}
 }
@@ -94,6 +105,41 @@ async function execute(tools: Map<string, any>, name: string, params: object, ct
 	return tools.get(name).execute("call-1", params, undefined, undefined, ctx);
 }
 
+const renderTheme = {
+	fg: (_color: string, value: string) => value,
+	bold: (value: string) => value,
+} as never;
+
+function renderToolResult(tools: Map<string, any>, name: string, result: unknown, isError = false): string {
+	const component = tools.get(name).renderResult(
+		result,
+		{ expanded: false, isPartial: false },
+		renderTheme,
+		{ isError },
+	);
+	return component.render(160).map(stripVTControlCharacters).join("\n");
+}
+
+function completedSummary(): ActiveAgentSummary {
+	return {
+		id: "planner-1",
+		agentName: "planner",
+		brief: "plan the migration\nstatus: \u001b[31mforged\u001b[0m",
+		status: "completed",
+		result: { outcome: "completed", report: "plan" },
+		inputTokens: 1_000,
+		outputTokens: 200,
+		cost: 0.01,
+		model: "model-x",
+		modelName: undefined,
+		thinking: "medium",
+		toolCallCount: 0,
+		toolFailureCount: 0,
+		toolActivities: [],
+		workedMs: 5_000,
+	};
+}
+
 describe("tools", () => {
 	let previousAgentDir: string | undefined;
 
@@ -107,34 +153,156 @@ describe("tools", () => {
 		else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
 	});
 
-	it("lists available and active subagents and warns when active jobs exist", async () => {
+	it("returns discovery JSON and structured details from crew_list without reporting open work", async () => {
 		const { crew, tools, ctx, sent } = setup();
-		crew.active = [{ id: "planner-1", agentName: "planner", brief: "plan the migration\nstatus: \u001b[31mforged\u001b[0m", status: "completed", result: { outcome: "completed", report: "plan" }, inputTokens: 1_000, outputTokens: 200, cost: 0.01, model: "model-x", modelName: undefined, thinking: "medium", toolCallCount: 0, toolFailureCount: 0, toolActivities: [], workedMs: 5_000 }];
+		crew.active = [completedSummary()];
 
 		const response = await execute(tools, "crew_list", {}, ctx);
-		await Promise.resolve();
 
-		assert.match(text(response), /name: scout/);
-		assert.match(text(response), /model: owner session model/);
-		assert.doesNotMatch(text(response), /^(tools|skills|interactive):/m);
-		assert.match(text(response), /id: planner-1/);
-		assert.match(text(response), /^brief: plan the migration status: forged$/m);
-		assert.doesNotMatch(text(response), /^status: forged/m);
-		assert.equal(text(response), stripVTControlCharacters(text(response)));
-		assert.match(text(response), /worked: 5s/);
-		assert.match(text(response), /^status: completed$/m);
-		assert.match(text(response), /model: model-x/);
-		// The warning belongs to the tool result, not to a separate message and owner turn.
-		assert.match(text(response), /^⚠ Active subagents detected\. Do not poll crew_list; results arrive automatically\.$/m);
+		const parsed = JSON.parse(text(response)) as { agents: Array<Record<string, unknown>>; warnings: unknown[] };
+		assert.deepEqual(
+			parsed.agents.find((agent) => agent.name === "scout"),
+			{ name: "scout", description: "scout description", model: null, thinking: null },
+		);
+		assert.equal(parsed.warnings.length, 0);
+		assert.doesNotMatch(text(response), /planner-1/);
+		assert.deepEqual(crew.activeOwnerIds, []);
+		const details = response.details as { agents: Array<Record<string, unknown>>; warnings: unknown[] };
+		assert.equal(details.agents[0]?.name, "scout");
+		assert.equal(details.agents[0]?.description, "scout description");
+		assert.equal(details.warnings.length, 0);
 		assert.equal(sent.length, 0);
 	});
 
-	it("resolves the catalog name of a configured model through the registry", async () => {
-		const { tools, ctx } = setup({ agentModel: "provider/model-id" });
+	it("renders persisted legacy crew_list text without changing the result", () => {
+		const { tools } = setup();
+		const legacyText = "## Available Subagents\n\nname: scout\ndescription: scout description\n\n## Active Subagents\nNo subagents currently active.";
+		const result = { content: [{ type: "text", text: legacyText }], details: {} };
+		const saved = JSON.stringify(result);
+
+		const output = renderToolResult(tools, "crew_list", result);
+
+		assert.equal(output.split("\n").map((line) => line.trimEnd()).join("\n"), legacyText);
+		assert.equal(JSON.stringify(result), saved);
+	});
+
+	it("reports discovery warnings as structured JSON and as a Markdown card", async () => {
+		const { tools, ctx } = setup();
+		writeFileSync(
+			join(ctx.cwd, ".pi", "agents", "scout-copy.md"),
+			["---", "name: scout", "description: duplicate", "---", "duplicate prompt"].join("\n"),
+		);
 
 		const response = await execute(tools, "crew_list", {}, ctx);
 
-		assert.match(text(response), /^model: \[provider\] Resolved Model$/m);
+		const parsed = JSON.parse(text(response)) as { warnings: Array<{ message: string; file_path: string }> };
+		assert.equal(parsed.warnings.length, 1);
+		assert.match(parsed.warnings[0]?.message ?? "", /Duplicate subagent name "scout"/);
+		assert.match(parsed.warnings[0]?.file_path ?? "", /scout.*\.md$/);
+
+		initTheme("dark", false);
+		const output = renderToolResult(tools, "crew_list", response);
+		assert.match(output, /Discovery warnings/);
+		assert.match(output, /Duplicate subagent name "scout"/);
+	});
+
+	it("returns the owner's open subagents as status JSON and structured details", async () => {
+		const { crew, tools, ctx, sent } = setup();
+		crew.active = [completedSummary()];
+
+		const response = await execute(tools, "crew_status", {}, ctx);
+
+		assert.deepEqual(JSON.parse(text(response)), {
+			agents: [{
+				id: "planner-1",
+				name: "planner",
+				brief: "plan the migration\nstatus: \u001b[31mforged\u001b[0m",
+				status: "completed",
+			}],
+		});
+		const details = response.details as { subagents: Array<Record<string, unknown>> };
+		assert.equal(details.subagents[0]?.id, "planner-1");
+		assert.equal(details.subagents[0]?.name, "planner");
+		assert.equal(details.subagents[0]?.brief, "plan the migration\nstatus: \u001b[31mforged\u001b[0m");
+		assert.equal(details.subagents[0]?.status, "completed");
+		assert.equal(details.subagents[0]?.model, "model-x");
+		assert.equal(details.subagents[0]?.workedMs, 5_000);
+		assert.deepEqual(crew.activeOwnerIds, ["owner-1"]);
+		assert.equal(sent.length, 0);
+	});
+
+	it("renders crew_status as sanitized text and reports an empty snapshot", async () => {
+		const { crew, tools, ctx } = setup();
+		initTheme("dark", false);
+
+		const empty = await execute(tools, "crew_status", {}, ctx);
+		assert.deepEqual(JSON.parse(text(empty)), { agents: [] });
+		assert.equal(renderToolResult(tools, "crew_status", empty).trim(), "No open subagent sessions.");
+
+		crew.active = [completedSummary()];
+		const response = await execute(tools, "crew_status", {}, ctx);
+		const output = renderToolResult(tools, "crew_status", response);
+
+		assert.match(output, /Subagent sessions/);
+		assert.match(output, /planner-1 · planner — plan the migration status: forged/);
+		assert.match(output, /completed · model: model-x · worked: 5s/);
+		assert.doesNotMatch(output, /\u001b\[31m/);
+		assert.doesNotMatch(output, /"agents"/);
+	});
+
+	it("shows status fields literally without interpreting Markdown links", async () => {
+		const { crew, tools, ctx } = setup();
+		const link = "[click](https://evil.example)";
+		crew.active = [{ ...completedSummary(), agentName: link, brief: link, modelName: link }];
+		const response = await execute(tools, "crew_status", {}, ctx);
+		const component = tools.get("crew_status").renderResult(response, {}, renderTheme, { isError: false });
+		const raw = component.render(200).join("\n");
+		assert.doesNotMatch(raw, /\u001b\]8;/);
+		assert.equal(raw.split(link).length - 1, 3, "name, brief, and model label remain literal");
+		assert.equal(JSON.parse(text(response)).agents[0].brief, link);
+	});
+
+	it("resolves a configured model's catalog name for display while model JSON keeps the id", async () => {
+		const { tools, ctx } = setup({ agentModel: "provider/model-id" });
+		initTheme("dark", false);
+
+		const response = await execute(tools, "crew_list", {}, ctx);
+
+		assert.equal(JSON.parse(text(response)).agents[0].model, "provider/model-id");
+		const details = response.details as { agents: Array<Record<string, unknown>> };
+		assert.equal(details.agents[0]?.modelName, "Resolved Model");
+		assert.match(renderToolResult(tools, "crew_list", response), /\[provider\] Resolved Model/);
+	});
+
+	it("renders discovery names and model settings together and wraps full descriptions with aligned indentation", () => {
+		const { tools } = setup();
+		const description = "Investigates the requested repository scope and reports every relevant finding without cutting the description short.";
+		const result = { details: {
+			agents: [{ name: "scout", description, model: undefined, modelName: undefined, thinking: "high" }],
+			warnings: [],
+		} };
+		const component = tools.get("crew_list").renderResult(result, {}, renderTheme, { isError: false });
+		const lines: string[] = component.render(48).map(stripVTControlCharacters);
+		assert.equal(lines[0].trim(), "Available subagents · 1");
+		assert.equal(lines[1].trim(), "");
+		assert.equal(lines[2].trim(), "scout · owner session model · high");
+		const descriptionLines = lines.slice(3).filter((line) => line.trim());
+		assert.ok(descriptionLines.length > 1);
+		assert.ok(descriptionLines.every((line) => line.startsWith("  ")));
+		assert.equal(descriptionLines.map((line) => line.trim()).join(" "), description);
+		assert.ok(lines.every((line) => line.length <= 48));
+	});
+
+	it("registers crew_status as a snapshot query while keeping verified close guidance", () => {
+		const { tools } = setup();
+		const status = tools.get("crew_status");
+		const done = tools.get("crew_done");
+
+		assert.match(status.promptGuidelines.join("\n"), /one-time snapshot/);
+		assert.match(status.promptGuidelines.join("\n"), /never poll it for completion/);
+		assert.match(tools.get("crew_list").promptGuidelines.join("\n"), /crew_status/);
+		assert.match(done.promptGuidelines.join("\n"), /Verify the delivered result/);
+		assert.match(tools.get("crew_respond").parameters.properties.subagent_id.description, /crew_status/);
 	});
 
 	it("registers crew_spawn with closed, grammar-compatible schemas without strict constrained sampling", () => {
@@ -162,16 +330,16 @@ describe("tools", () => {
 		const { crew, tools, ctx } = setup();
 
 		const spawned = await execute(tools, "crew_spawn", { subagent: "scout", brief: "inspect package", task: structuredTask }, ctx);
-		assert.match(text(spawned), /Subagent 'scout' spawned as scout-1234/);
-		assert.deepEqual(spawned.details, { id: "scout-1234" });
+		assert.deepEqual(JSON.parse(text(spawned)), { subagent_id: "scout-1234" });
+		assert.match(renderToolResult(tools, "crew_spawn", spawned), /Subagent 'scout' spawned as scout-1234/);
 		assert.equal((crew.spawnCalls[0]?.[0] as { name?: string } | undefined)?.name, "scout");
 		assert.equal((crew.spawnCalls[0]?.[4] as { brief?: string } | undefined)?.brief, "inspect package");
 
-		await assert.rejects(
+		await rejectsJsonError(
 			() => execute(tools, "crew_spawn", { subagent: "scout", brief: " ", task: structuredTask }, ctx),
 			/brief is required/,
 		);
-		await assert.rejects(
+		await rejectsJsonError(
 			() => execute(tools, "crew_spawn", { subagent: "missing", brief: "missing task", task: structuredTask }, ctx),
 			/Unknown subagent: "missing"\. Available:/,
 		);
@@ -209,7 +377,7 @@ describe("tools", () => {
 
 	it("requires valid structured spawn tasks", async () => {
 		const { tools, ctx } = setup();
-		await assert.rejects(
+		await rejectsJsonError(
 			() => execute(tools, "crew_spawn", {
 				subagent: "scout",
 				brief: "legacy string",
@@ -218,7 +386,7 @@ describe("tools", () => {
 			/task is required and must be a structured assignment/,
 		);
 
-		await assert.rejects(
+		await rejectsJsonError(
 			() => execute(tools, "crew_spawn", {
 				subagent: "scout",
 				brief: "invalid goal",
@@ -226,7 +394,7 @@ describe("tools", () => {
 			}, ctx),
 			/task\.goal is required/,
 		);
-		await assert.rejects(
+		await rejectsJsonError(
 			() => execute(tools, "crew_spawn", {
 				subagent: "scout",
 				brief: "invalid instructions",
@@ -239,7 +407,7 @@ describe("tools", () => {
 	it("validates abort modes and formats partial abort results", async () => {
 		const { crew, tools, ctx } = setup();
 
-		await assert.rejects(
+		await rejectsJsonError(
 			() => execute(tools, "crew_abort", { subagent_id: "a", all: true }, ctx),
 			/Provide exactly one/,
 		);
@@ -247,15 +415,34 @@ describe("tools", () => {
 		crew.abortOwnedResult = { abortedIds: ["a"], missingIds: ["b"], foreignIds: ["c"] };
 		const partial = await execute(tools, "crew_abort", { subagent_ids: ["a", "b", "c"] }, ctx);
 		assert.equal(partial.terminate, true);
-		assert.match(text(partial), /Aborted 1 subagent\(s\): a/);
-		assert.match(text(partial), /Not found or already finished: b/);
-		assert.match(text(partial), /Belong to a different session: c/);
-		assert.deepEqual(partial.details, { ids: ["a"], missing_ids: ["b"], foreign_ids: ["c"] });
+		assert.deepEqual(JSON.parse(text(partial)), { aborted_ids: ["a"], missing_ids: ["b"], foreign_ids: ["c"] });
+		const display = renderToolResult(tools, "crew_abort", partial);
+		assert.match(display, /Aborted 1 subagent\(s\): a/);
+		assert.match(display, /Not found or already finished: b/);
+		assert.match(display, /Belong to a different session: c/);
 
-		await assert.rejects(
+		crew.abortOwnedResult = { abortedIds: [], missingIds: ["b"], foreignIds: ["c"] };
+		await assert.rejects(() => execute(tools, "crew_abort", { subagent_ids: ["b", "c"] }, ctx), (error: Error) => {
+			assert.equal(JSON.parse(error.message).error, "Not found or already finished: b\nBelong to a different session: c");
+			return true;
+		});
+
+		await rejectsJsonError(
 			() => execute(tools, "crew_abort", { all: true }, ctx),
 			/No active subagents in the current session\./,
 		);
+	});
+
+	it("keeps tool errors readable in the TUI while returning JSON to the model", async () => {
+		const { tools, ctx } = setup();
+		await assert.rejects(() => execute(tools, "crew_abort", { all: true }, ctx), (error: Error) => {
+			assert.deepEqual(JSON.parse(error.message), { error: "No active subagents in the current session." });
+			const rendered = renderToolResult(tools, "crew_abort", { content: [{ type: "text", text: error.message }] }, true);
+			assert.match(rendered, /No active subagents in the current session\./);
+			assert.doesNotMatch(rendered, /"ok"|"error"/);
+			return true;
+		});
+		assert.match(renderToolResult(tools, "crew_abort", { content: [{ type: "text", text: "SDK validation failed" }] }, true), /SDK validation failed/);
 	});
 
 	it("describes universal follow-up and explicit verified close behavior", () => {
@@ -275,11 +462,11 @@ describe("tools", () => {
 		const { crew, tools, ctx } = setup();
 		crew.respondError = "not waiting";
 		crew.doneError = "not found";
-		await assert.rejects(
+		await rejectsJsonError(
 			() => execute(tools, "crew_respond", { subagent_id: "p", message: "hi" }, ctx),
 			/not waiting/,
 		);
-		await assert.rejects(
+		await rejectsJsonError(
 			() => execute(tools, "crew_done", { subagent_id: "p" }, ctx),
 			/not found/,
 		);
@@ -287,10 +474,10 @@ describe("tools", () => {
 		crew.respondError = undefined;
 		crew.doneError = undefined;
 		const respond = await execute(tools, "crew_respond", { subagent_id: "p", message: "hi" }, ctx);
-		assert.match(text(respond), /Message sent to subagent p/);
-		assert.deepEqual(respond.details, { id: "p" });
+		assert.deepEqual(JSON.parse(text(respond)), { subagent_id: "p" });
+		assert.match(renderToolResult(tools, "crew_respond", respond), /Message sent to subagent p/);
 		const done = await execute(tools, "crew_done", { subagent_id: "p" }, ctx);
-		assert.match(text(done), /Subagent p closed/);
-		assert.deepEqual(done.details, { id: "p" });
+		assert.deepEqual(JSON.parse(text(done)), { subagent_id: "p" });
+		assert.match(renderToolResult(tools, "crew_done", done), /Subagent p closed/);
 	});
 });

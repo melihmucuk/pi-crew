@@ -10,6 +10,8 @@ import { registerPiCrewExtension } from "../extension/index.js";
 import type { ActiveAgentSummary, ActiveRuntimeBinding } from "../extension/crew.js";
 
 interface RegisteredHandlers {
+	before_agent_start?: (event: unknown, ctx: ExtensionContextStub) => { message: { customType: string; content: string; display: boolean } } | undefined;
+	turn_end?: (event: unknown, ctx: ExtensionContextStub) => void;
 	context?: (event: { messages: AgentMessage[] }, ctx: ExtensionContextStub) => unknown;
 	session_start?: (event: unknown, ctx: ExtensionContextStub) => void;
 	session_shutdown?: (event: { reason: string }, ctx: ExtensionContextStub) => void;
@@ -24,6 +26,7 @@ interface ExtensionContextStub {
 	sessionManager: {
 		getSessionId: () => string;
 		getSessionFile: () => string | undefined;
+		buildContextEntries: () => unknown[];
 	};
 	isProjectTrusted: () => boolean;
 	ui: {
@@ -82,6 +85,7 @@ function setup(setupKey = Symbol("pi-crew-test-hooks")) {
 	const handlers: RegisteredHandlers = {};
 	const crew = new FakeCrew();
 	const processHooks = new FakeProcessHooks();
+	const sentMessages: Array<{ message: unknown; options: unknown }> = [];
 	const pi = {
 		on(name: keyof RegisteredHandlers, handler: RegisteredHandlers[typeof name]) {
 			handlers[name] = handler as never;
@@ -90,18 +94,19 @@ function setup(setupKey = Symbol("pi-crew-test-hooks")) {
 		registerMessageRenderer() {},
 		registerEntryRenderer() {},
 		registerShortcut() {},
-		sendMessage() {},
+		sendMessage(message: unknown, options: unknown) { sentMessages.push({ message, options }); },
 		appendEntry() {},
 	};
 
 	registerPiCrewExtension(pi as never, {
+		env: {},
 		crew: crew as never,
 		processHooks,
 		processHooksSetupKey: setupKey,
 		extensionDir: "/pkg/extension",
 	});
 
-	return { crew, handlers, pi, processHooks };
+	return { crew, handlers, pi, processHooks, sentMessages };
 }
 
 function context(
@@ -118,6 +123,7 @@ function context(
 		sessionManager: {
 			getSessionId: () => sessionId,
 			getSessionFile: () => sessionFile,
+			buildContextEntries: () => [],
 		},
 		isProjectTrusted: () => true,
 		ui: {
@@ -164,6 +170,26 @@ function tuiHostContext(cwd: string, widgets: Array<{ render(width: number): str
 }
 
 describe("extension lifecycle wiring", () => {
+	it("appends status only at safe boundaries without triggering a turn or mutating context", () => {
+		const { crew, handlers, sentMessages } = setup();
+		const ctx = context();
+		crew.summaries = [widgetSummary()];
+		const initial = handlers.before_agent_start?.({}, ctx)?.message;
+		assert.equal(initial?.customType, "crew-status");
+		assert.equal(initial?.display, false);
+		const messages = [{ ...initial, role: "custom", timestamp: 1 }] as AgentMessage[];
+		const before = structuredClone(messages);
+		ctx.sessionManager.buildContextEntries = () => [{ ...initial, type: "custom_message", timestamp: new Date(1).toISOString() }];
+		handlers.context?.({ messages }, ctx);
+		assert.deepEqual(messages, before);
+		assert.equal(sentMessages.length, 0);
+		crew.summaries = [];
+		handlers.turn_end?.({}, ctx);
+		assert.equal(sentMessages.length, 1);
+		assert.deepEqual(sentMessages[0].options, { triggerTurn: false });
+		assert.deepEqual(JSON.parse((sentMessages[0].message as { content: string }).content).agents, []);
+	});
+
 	it("registers mention autocomplete only for TUI sessions", () => {
 		const { handlers } = setup();
 		let registrations = 0;

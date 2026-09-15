@@ -42,7 +42,8 @@ Keep working while the subagents run. Results arrive automatically, and successf
 
 | Tool | Purpose |
 | ---- | ------- |
-| `crew_list` | List agent names, role descriptions, models, and thinking levels; show owned active work with IDs, statuses, briefs, and working time. |
+| `crew_list` | Discover agent names, role descriptions, models, thinking levels, and warnings. |
+| `crew_status` | Show owned open subagent sessions with IDs, names, briefs, and statuses. |
 | `crew_spawn` | Start a subagent with a self-contained task; returns without waiting. |
 | `crew_respond` | Answer a question or request a correction from a `completed` or `needs_input` subagent, not a running one. |
 | `crew_done` | Close a subagent after its result is verified and no follow-up remains. |
@@ -135,7 +136,7 @@ Ask Pi to create a custom agent using the [agent-writing workflow](skills/pi-cre
 - **⏳ `needs_input`**: the subagent is waiting for an answer. Pi supplies it or asks you, then continues with `crew_respond`.
 - **Error or abort**: the subagent session is disposed; successful results are never fabricated.
 
-Results arrive automatically; no polling is needed. Switching sessions preserves background work; `/fork` and `/clone` transfer it to the new session. Quitting Pi aborts active subagents. See [delivery and session rules](docs/result-protocol.md#owner-delivery) for queued results and reload behavior.
+Results arrive automatically; no polling is needed. Pi receives compact status updates and occasional reminders about subagents awaiting verification or input; these never wake an idle session or close subagents automatically. Switching sessions preserves background work; `/fork` and `/clone` transfer it to the new session. Quitting Pi aborts active subagents. See [delivery and session rules](docs/result-protocol.md#owner-delivery) for queued results and reload behavior.
 
 The status widget shows model, working time, tokens, cost, call counts, and recent tool activity. Waiting time does not count as working time. Press `Ctrl+Shift+E` to toggle activity details. Expand result cards to read the full report and open the child session.
 
@@ -146,6 +147,10 @@ To hide tool-activity rows, put this in `pi-crew.json` and reload:
 ```
 
 Status and usage totals remain visible; execution and recording are unchanged.
+
+## Herdr Sidebar
+
+Inside [Herdr](https://herdr.dev), the Agents sidebar automatically shows the running subagent count, such as `pi · 2 subagents`. No setup required; Herdr’s status indicator stays unchanged.
 
 ## Documentation
 

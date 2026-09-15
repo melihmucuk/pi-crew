@@ -19,7 +19,7 @@ import {
 import { ModelRegistry, ModelRuntime } from "@earendil-works/pi-coding-agent";
 import type { AgentConfig } from "../extension/catalog.js";
 import type { SubagentState } from "../extension/crew.js";
-import { CREW_REPORT_REMINDER, CREW_REPORT_TOOL_NAME } from "../extension/subagent-result.js";
+import { createCrewReportTool, CREW_REPORT_REMINDER, CREW_REPORT_TOOL_NAME } from "../extension/subagent-result.js";
 import type { SubagentSettlement } from "../extension/subagent-status.js";
 import { SubagentSessionRunner, type SubagentRunnerCallbacks, type SubagentUsage } from "../extension/subagent-session.js";
 import type { CrewTask } from "../extension/task.js";
@@ -864,6 +864,19 @@ describe("universal subagent result protocol", () => {
 		assert.equal(reminderCount(harness.contexts), 2);
 	});
 
+	it("acknowledges a report as JSON without changing its validated result or termination", async () => {
+		const tool = createCrewReportTool();
+		const report = { outcome: "completed", report: "## Findings\n\nVerified." };
+		const result = await tool.execute("report-json", report, undefined, undefined, {} as never);
+		assert.deepEqual(JSON.parse((result.content[0] as { text: string }).text), {});
+		assert.deepEqual(result.details, report);
+		assert.equal(result.terminate, true);
+		const component = tool.renderResult!(result, { expanded: false, isPartial: false }, {
+			fg: (_color: string, text: string) => text,
+		} as never, { isError: false } as never);
+		assert.match(component.render(100).join("\n"), /Final subagent report recorded\./);
+	});
+
 	it("preserves multiline report and needs strings exactly", async (t) => {
 		const report = "## Findings\n\n- first\n- second\n";
 		const needs = "Choose one:\n\n1. Alpha\n2. Beta\n";
@@ -896,6 +909,13 @@ describe("universal subagent result protocol", () => {
 				(context) => {
 					const result = context.messages.at(-1);
 					invalidWasRejected = result?.role === "toolResult" && result.isError;
+					if (index < 4) {
+						assert.equal(result?.role, "toolResult");
+						const content = result!.content[0] as { text: string };
+						const error = JSON.parse(content.text);
+						assert.deepEqual(Object.keys(error), ["error"]);
+						assert.match(error.error, /crew_report/);
+					}
 					return completedReport(`Recovered ${index}`, `valid-${index}`);
 				},
 			]);

@@ -156,6 +156,7 @@ export class CrewRuntime {
 	private readonly agents = new Map<string, SubagentState>();
 	private readonly runner: SubagentRunner;
 	private readonly refreshCallbacks = new Map<string, () => void>();
+	private readonly runningCountListeners = new Set<(count: number) => void>();
 	/** Owner session file → session id, so a fork can find the session it replaced. */
 	private readonly sessionIdsByFile = new Map<string, string>();
 	private activeBinding: ActiveRuntimeBinding | undefined;
@@ -223,6 +224,7 @@ export class CrewRuntime {
 		extensionResolvedPath: string,
 	): string {
 		const state = this.createAgent(agentConfig, task, ctx.brief ?? "", ownerSessionId);
+		this.publishRunningCount();
 		this.refreshWidgetFor(ownerSessionId);
 		this.runner.start(state, {
 			cwd,
@@ -237,6 +239,7 @@ export class CrewRuntime {
 		const transition = this.startSubagentResponse(id, callerSessionId);
 		if (!transition.ok) return { error: transition.error };
 
+		this.publishRunningCount();
 		this.refreshWidgetFor(transition.state.ownerSessionId);
 		this.runner.respond(transition.state, message);
 		return {};
@@ -291,6 +294,27 @@ export class CrewRuntime {
 	abortAll(): void {
 		const allAgents = Array.from(this.agents.values()).filter((state) => isAbortableStatus(state.lifecycle.status));
 		for (const state of allAgents) this.abort(state.id, { reason: "Aborted during shutdown" });
+	}
+
+	/** Pane-level observers include work preserved across owner-session switches. */
+	observeRunningCount(listener: (count: number) => void): () => void {
+		this.runningCountListeners.add(listener);
+		listener(this.getRunningCount());
+		return () => { this.runningCountListeners.delete(listener); };
+	}
+
+	private getRunningCount(): number {
+		let count = 0;
+		for (const state of this.agents.values()) {
+			if (isSubagentStatusPhase(state.lifecycle.status, "in-flight")) count++;
+		}
+		return count;
+	}
+
+	private publishRunningCount(): void {
+		if (this.runningCountListeners.size === 0) return;
+		const count = this.getRunningCount();
+		for (const listener of this.runningCountListeners) listener(count);
 	}
 
 	getActiveSummariesForOwner(ownerSessionId: string): ActiveAgentSummary[] {
@@ -382,6 +406,7 @@ export class CrewRuntime {
 			state.runningSince = undefined;
 		}
 		state.lifecycle = settlement;
+		this.publishRunningCount();
 
 		this.deliver(state.ownerSessionId, {
 			id: state.id,
@@ -492,7 +517,7 @@ export class CrewRuntime {
 }
 
 /** Bump whenever `CrewRuntime`'s public API or the `SubagentState` shape changes; a mismatch aborts the stale runtime's subagents. */
-const CREW_RUNTIME_VERSION = 8;
+const CREW_RUNTIME_VERSION = 9;
 const crewRuntimeKey = Symbol.for("pi-crew.runtime");
 const globalWithCrewRuntime = globalThis as typeof globalThis & Record<symbol, (CrewRuntime & { __piCrewRuntimeVersion?: number }) | undefined>;
 

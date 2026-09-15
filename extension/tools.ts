@@ -4,7 +4,7 @@ import type {
   ExtensionAPI,
   ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
-import { Text } from "@earendil-works/pi-tui";
+import { Box, Spacer, Text, type Component } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import {
   discoverAgents,
@@ -12,7 +12,6 @@ import {
   type AgentDiscoveryWarning,
 } from "./catalog.js";
 import type {
-  AbortOwnedResult,
   ActiveAgentSummary,
   CrewRuntime,
 } from "./crew.js";
@@ -24,6 +23,7 @@ import {
   validateCrewTask,
 } from "./task.js";
 import { sanitizeInline } from "./tool-activity.js";
+import { formatAbortResult, jsonToolError, type CrewActionResult } from "./tool-output.js";
 import {
   getSubagentStatusPresentation,
   renderCrewCall,
@@ -52,76 +52,153 @@ function getToolContext(ctx: ExtensionContext): ToolContext {
 }
 
 function toolSuccess(
-  text: string,
-  details: Record<string, unknown> = {},
+  payload: Record<string, unknown>,
+  details: Record<string, unknown> = payload,
   options: { terminate?: boolean } = {},
 ): CrewToolResult {
   return {
-    content: [{ type: "text", text }],
+    content: [{ type: "text", text: JSON.stringify(payload) }],
     details,
     ...(options.terminate ? { terminate: true } : {}),
   };
 }
 
-function formatAvailableAgents(agents: AgentConfig[], ctx: ExtensionContext): string[] {
-  if (agents.length === 0) {
-    return [
-      `No valid subagent definitions found. Add \`.md\` files to \`<cwd>/${PROJECT_CONFIG_DIR_NAME}/agents/\` or \`${piCodingAgent.getAgentDir()}/agents/\`.`,
-    ];
+type CrewListAgentDetails = {
+  name: string;
+  description: string;
+  model: string | undefined;
+  modelName: string | undefined;
+  thinking: string | undefined;
+};
+
+type CrewListDetails = {
+  agents: CrewListAgentDetails[];
+  warnings: AgentDiscoveryWarning[];
+};
+
+type CrewStatusSubagentDetails = {
+  id: string;
+  name: string;
+  brief: string | undefined;
+  status: string;
+  model: string | undefined;
+  modelName: string | undefined;
+  workedMs: number;
+};
+
+type CrewStatusDetails = {
+  subagents: CrewStatusSubagentDetails[];
+};
+
+function buildCrewListDetails(
+  agents: AgentConfig[],
+  warnings: AgentDiscoveryWarning[],
+  ctx: ExtensionContext,
+): CrewListDetails {
+  return {
+    agents: agents.map((agent) => {
+      const parsed = parseModelId(agent.model);
+      const resolvedName = parsed
+        ? ctx.modelRegistry.find(parsed.provider, parsed.modelId)?.name
+        : undefined;
+      return {
+        name: agent.name,
+        description: agent.description,
+        model: agent.model,
+        modelName: resolvedName,
+        thinking: agent.thinking,
+      };
+    }),
+    warnings,
+  };
+}
+
+function buildCrewStatusDetails(active: ActiveAgentSummary[]): CrewStatusDetails {
+  return {
+    subagents: active.map((agent) => ({
+      id: agent.id,
+      name: agent.agentName,
+      brief: agent.brief,
+      status: agent.status,
+      model: agent.model,
+      modelName: agent.modelName,
+      workedMs: agent.workedMs,
+    })),
+  };
+}
+
+function crewListModelContent(details: CrewListDetails): Record<string, unknown> {
+  return {
+    agents: details.agents.map((agent) => ({
+      name: agent.name,
+      description: agent.description,
+      model: agent.model ?? null,
+      thinking: agent.thinking ?? null,
+    })),
+    warnings: details.warnings.map((warning) => ({
+      message: warning.message,
+      file_path: warning.filePath,
+    })),
+  };
+}
+
+function crewStatusModelContent(details: CrewStatusDetails): Record<string, unknown> {
+  return {
+    agents: details.subagents.map((agent) => ({
+      id: agent.id,
+      name: agent.name,
+      brief: agent.brief ?? "",
+      status: agent.status,
+    })),
+  };
+}
+
+function renderCrewList(details: CrewListDetails, theme: Parameters<ToolRenderCall>[1]): Component {
+  return {
+    render(width) {
+      const box = new Box(0, 0);
+      box.addChild(new Text(theme.fg("toolTitle", theme.bold(`Available subagents · ${details.agents.length}`)), 0, 0));
+      if (details.agents.length === 0) {
+        box.addChild(new Spacer());
+        box.addChild(new Text(`No valid subagent definitions found. Add .md files to <cwd>/${PROJECT_CONFIG_DIR_NAME}/agents/ or ${piCodingAgent.getAgentDir()}/agents/.`, 0, 0));
+      }
+      for (const agent of details.agents) {
+        const model = formatModelLabel(agent.model, agent.modelName) ?? "owner session model";
+        box.addChild(new Spacer());
+        box.addChild(new Text(
+          theme.fg("accent", theme.bold(sanitizeInline(agent.name)))
+            + theme.fg("muted", ` · ${sanitizeInline(model)} · ${agent.thinking ?? "model default"}`),
+          0, 0,
+        ));
+        box.addChild(new Text(sanitizeInline(agent.description), 2, 0));
+      }
+      if (details.warnings.length > 0) {
+        box.addChild(new Spacer());
+        box.addChild(new Text(theme.fg("warning", theme.bold("Discovery warnings")), 0, 0));
+        for (const warning of details.warnings) {
+          box.addChild(new Text(`${sanitizeInline(warning.message)} (${sanitizeInline(warning.filePath)})`, 2, 0));
+        }
+      }
+      return box.render(width);
+    },
+    // Styles are rebuilt on render so theme changes cannot leave stale colors.
+    invalidate() {},
+  };
+}
+
+function crewStatusText(details: CrewStatusDetails): string {
+  if (details.subagents.length === 0) return "No open subagent sessions.";
+  const lines = ["Subagent sessions"];
+  for (const agent of details.subagents) {
+    const presentation = getSubagentStatusPresentation(agent.status);
+    const model = formatModelLabel(agent.model, agent.modelName) ?? "resolving";
+    lines.push(
+      "",
+      `- ${sanitizeInline(agent.id)} · ${sanitizeInline(agent.name)} — ${sanitizeInline(agent.brief ?? "no brief")}`,
+      `  ${presentation.icon} ${presentation.label} · model: ${sanitizeInline(model)} · worked: ${formatDuration(agent.workedMs)}`,
+    );
   }
-
-  return agents.flatMap((agent) => {
-    const parsed = parseModelId(agent.model);
-    const resolvedName = parsed ? ctx.modelRegistry.find(parsed.provider, parsed.modelId)?.name : undefined;
-    return [
-      "",
-      `name: ${agent.name}`,
-      `description: ${agent.description}`,
-      `model: ${formatModelLabel(agent.model, resolvedName) ?? "owner session model"}`,
-      `thinking: ${agent.thinking ?? "model default"}`,
-    ];
-  });
-}
-
-function formatWarnings(warnings: AgentDiscoveryWarning[]): string[] {
-  if (warnings.length === 0) return [];
-  return [
-    "",
-    "## Ignored subagent definitions",
-    ...warnings.map((warning) => `- ${warning.message} (${warning.filePath})`),
-  ];
-}
-
-function formatActiveAgents(active: ActiveAgentSummary[]): string[] {
-  if (active.length === 0) return ["No subagents currently active."];
-  return active.flatMap((agent) => {
-    return [
-      "",
-      `id: ${agent.id}`,
-      `name: ${agent.agentName}`,
-      ...(agent.brief ? [`brief: ${sanitizeInline(agent.brief)}`] : []),
-      `status: ${getSubagentStatusPresentation(agent.status).label}`,
-      `model: ${formatModelLabel(agent.model, agent.modelName) ?? "resolving"}`,
-      `worked: ${formatDuration(agent.workedMs)}`,
-    ];
-  });
-}
-
-function formatAbortToolMessage(result: AbortOwnedResult): string {
-  const parts: string[] = [];
-  if (result.abortedIds.length > 0)
-    parts.push(
-      `Aborted ${result.abortedIds.length} subagent(s): ${result.abortedIds.join(", ")}`,
-    );
-  if (result.missingIds.length > 0)
-    parts.push(
-      `Not found or already finished: ${result.missingIds.join(", ")}`,
-    );
-  if (result.foreignIds.length > 0)
-    parts.push(
-      `Belong to a different session: ${result.foreignIds.join(", ")}`,
-    );
-  return parts.join("\n");
+  return lines.join("\n");
 }
 
 function notifyDiscoveryWarnings(
@@ -159,7 +236,11 @@ function registerActionTool<Params extends object>(
         }
       : {}),
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-      return action(params as Params, ctx);
+      try {
+        return action(params as Params, ctx);
+      } catch (error) {
+        throw jsonToolError(error);
+      }
     },
     renderResult(result, _options, theme, context) {
       return renderCrewResult(result, theme, context.isError);
@@ -177,44 +258,67 @@ export function registerCrewTools(
   pi.registerTool({
     name: "crew_list",
     label: "List Crew",
-    description: "List subagent definitions and active subagents.",
+    description: "List available subagent definitions and discovery warnings.",
     parameters: Type.Object({}),
-    promptSnippet: "List available subagents and active subagents.",
+    promptSnippet: "List available subagent definitions for discovery.",
     promptGuidelines: [
-      "crew_list: Use for discovery or a status snapshot; never poll for completion.",
+      "crew_list: Use for discovery of subagent definitions; use crew_status for a snapshot of your open subagents.",
     ],
     async execute(_toolCallId, _params, _signal, _onUpdate, ctx) {
-      const toolCtx = getToolContext(ctx);
-      const { agents, warnings } = discoverAgents(toolCtx.cwd, {
-        projectTrusted: toolCtx.projectTrusted,
-      });
-      const active = crew.getActiveSummariesForOwner(toolCtx.callerSessionId);
-      const lines = [
-        "## Available Subagents",
-        ...formatAvailableAgents(agents, ctx),
-        ...formatWarnings(warnings),
-        "",
-        "## Active Subagents",
-        ...formatActiveAgents(active),
-      ];
-      notifyDiscoveryWarnings(ctx, shownDiscoveryWarnings, warnings);
-      if (active.length > 0) {
-        lines.push(
-          "",
-          "⚠ Active subagents detected. Do not poll crew_list; results arrive automatically.",
-        );
+      try {
+        const toolCtx = getToolContext(ctx);
+        const { agents, warnings } = discoverAgents(toolCtx.cwd, {
+          projectTrusted: toolCtx.projectTrusted,
+        });
+        notifyDiscoveryWarnings(ctx, shownDiscoveryWarnings, warnings);
+        const details = buildCrewListDetails(agents, warnings, ctx);
+        return toolSuccess(crewListModelContent(details), details);
+      } catch (error) {
+        throw jsonToolError(error);
       }
-      return {
-        content: [{ type: "text", text: lines.join("\n") }],
-        details: {},
-      };
     },
     renderCall(_args, theme, _context) {
       return new Text(theme.fg("toolTitle", theme.bold("crew_list")), 0, 0);
     },
-    renderResult(result, _options, _theme, _context) {
-      const text = result.content[0];
-      return new Text(text?.type === "text" ? text.text : "(no output)", 0, 0);
+    renderResult(result, _options, theme, context) {
+      if (context.isError) return renderCrewResult(result, theme, true);
+      // Persisted results from before structured discovery details contain only text.
+      if (result.details && Object.keys(result.details).length === 0) {
+        const text = result.content[0];
+        return new Text(text?.type === "text" ? text.text : "(no output)", 0, 0);
+      }
+      const details = result.details as CrewListDetails;
+      return renderCrewList(details, theme);
+    },
+  });
+
+  pi.registerTool({
+    name: "crew_status",
+    label: "Crew Status",
+    description: "Snapshot the open subagents owned by the current session.",
+    parameters: Type.Object({}),
+    promptSnippet: "Snapshot this session's open subagents.",
+    promptGuidelines: [
+      "crew_status: Use for a one-time snapshot of your open subagents; results arrive automatically, so never poll it for completion.",
+    ],
+    async execute(_toolCallId, _params, _signal, _onUpdate, ctx) {
+      try {
+        const { callerSessionId } = getToolContext(ctx);
+        const details = buildCrewStatusDetails(
+          crew.getActiveSummariesForOwner(callerSessionId),
+        );
+        return toolSuccess(crewStatusModelContent(details), details);
+      } catch (error) {
+        throw jsonToolError(error);
+      }
+    },
+    renderCall(_args, theme, _context) {
+      return new Text(theme.fg("toolTitle", theme.bold("crew_status")), 0, 0);
+    },
+    renderResult(result, _options, theme, context) {
+      if (context.isError) return renderCrewResult(result, theme, true);
+      const details = result.details as CrewStatusDetails;
+      return new Text(crewStatusText(details), 0, 0);
     },
   });
 
@@ -271,9 +375,7 @@ export function registerCrewTools(
         },
         extensionDir,
       );
-      return toolSuccess(`Subagent '${subagent.name}' spawned as ${id}.`, {
-        id,
-      });
+      return toolSuccess({ subagent_id: id }, { action: "spawn", subagent_id: id, name: subagent.name } satisfies CrewActionResult);
     },
     renderCall(args, theme, context) {
       const subagent = args.subagent || "...";
@@ -345,11 +447,8 @@ export function registerCrewTools(
         if (abortedIds.length === 0) {
           throw new Error("No active subagents in the current session.");
         }
-        return toolSuccess(
-          `Aborted ${abortedIds.length} subagent(s): ${abortedIds.join(", ")}`,
-          { ids: abortedIds },
-          { terminate: true },
-        );
+        const payload = { aborted_ids: abortedIds, missing_ids: [], foreign_ids: [] };
+        return toolSuccess(payload, { action: "abort", ...payload } satisfies CrewActionResult, { terminate: true });
       }
 
       const ids = params.subagent_id
@@ -358,19 +457,15 @@ export function registerCrewTools(
       const result = crew.abortOwned(ids, callerSessionId, {
         reason: "Aborted by tool request",
       });
-      const message = formatAbortToolMessage(result);
+      const payload = {
+        aborted_ids: result.abortedIds,
+        missing_ids: result.missingIds,
+        foreign_ids: result.foreignIds,
+      };
       if (result.abortedIds.length === 0) {
-        throw new Error(message || "No subagents were aborted.");
+        throw new Error(formatAbortResult(payload) || "No subagents were aborted.");
       }
-      return toolSuccess(
-        message,
-        {
-          ids: result.abortedIds,
-          missing_ids: result.missingIds,
-          foreign_ids: result.foreignIds,
-        },
-        { terminate: true },
-      );
+      return toolSuccess(payload, { action: "abort", ...payload } satisfies CrewActionResult, { terminate: true });
     },
     renderCall(args, theme, _context) {
       if (args.all) return renderCrewCall(theme, "crew_abort", "all");
@@ -390,7 +485,7 @@ export function registerCrewTools(
     parameters: Type.Object({
       subagent_id: Type.String({
         description:
-          "ID of the subagent awaiting an owner action (from crew_list or crew_spawn result)",
+          "ID of the subagent awaiting an owner action (from crew_status or crew_spawn result)",
       }),
       message: Type.String({
         description:
@@ -409,10 +504,7 @@ export function registerCrewTools(
         callerSessionId,
       );
       if (error) throw new Error(error);
-      return toolSuccess(
-        `Message sent to subagent ${params.subagent_id}. Response will be delivered asynchronously.`,
-        { id: params.subagent_id },
-      );
+      return toolSuccess({ subagent_id: params.subagent_id }, { action: "respond", subagent_id: params.subagent_id } satisfies CrewActionResult);
     },
     renderCall(args, theme, _context) {
       return renderCrewCall(
@@ -439,9 +531,7 @@ export function registerCrewTools(
       const { callerSessionId } = getToolContext(ctx);
       const { error } = crew.done(params.subagent_id, callerSessionId);
       if (error) throw new Error(error);
-      return toolSuccess(`Subagent ${params.subagent_id} closed.`, {
-        id: params.subagent_id,
-      });
+      return toolSuccess({ subagent_id: params.subagent_id }, { action: "done", subagent_id: params.subagent_id } satisfies CrewActionResult);
     },
     renderCall(args, theme, _context) {
       return renderCrewCall(theme, "crew_done", args.subagent_id || "...");

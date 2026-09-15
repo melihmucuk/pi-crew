@@ -14,7 +14,7 @@ Delegate bounded work to subagents; responsibility for scope, verification, and 
 
 ## Select
 
-Call `crew_list` and select each resolved agent by its role description. Every subagent supports follow-up turns.
+Call `crew_list` and select each resolved agent by its role description. Every subagent supports follow-up turns. Use `crew_status` only when you need a snapshot of your open subagent sessions; never poll it for completion because results arrive automatically.
 
 An inline `<pi-crew subagent="name" />` reference records the subagent the user selected with `@crew:name`; mention names use only ASCII letters, digits, and hyphens. It is not an unconditional instruction to spawn. Use the surrounding sentence's intent to decide whether delegation is requested.
 

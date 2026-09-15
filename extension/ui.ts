@@ -20,6 +20,7 @@ import {
 	type SubagentToolStatus,
 } from "./subagent-status.js";
 import { sanitizeInline } from "./tool-activity.js";
+import { formatAbortResult, toolErrorText, type CrewActionResult } from "./tool-output.js";
 
 type ToolTheme = Parameters<Exclude<Parameters<ExtensionAPI["registerTool"]>[0]["renderCall"], undefined>>[1];
 export type ToolResult = AgentToolResult<unknown>;
@@ -141,10 +142,21 @@ export function renderCrewCall(
 	return box;
 }
 
+function actionResultText(result: CrewActionResult): string {
+	switch (result.action) {
+		case "spawn": return `Subagent '${result.name}' spawned as ${result.subagent_id}.`;
+		case "respond": return `Message sent to subagent ${result.subagent_id}. Response will be delivered asynchronously.`;
+		case "done": return `Subagent ${result.subagent_id} closed.`;
+		case "abort": return formatAbortResult(result);
+	}
+}
+
 export function renderCrewResult(result: ToolResult, theme: ToolTheme, isError: boolean): Text {
 	const text = result.content[0];
 	const content = text?.type === "text" && text.text ? text.text : "(no output)";
-	return new Text(theme.fg(isError ? "error" : "success", content), 0, 0);
+	const details = result.details as CrewActionResult | undefined;
+	const display = isError ? toolErrorText(content) : details?.action ? actionResultText(details) : content;
+	return new Text(theme.fg(isError ? "error" : "success", display), 0, 0);
 }
 
 export const CREW_WIDGET_TOGGLE_SHORTCUT = "ctrl+shift+e";
@@ -242,6 +254,7 @@ interface WidgetState {
 	timer: ReturnType<typeof setInterval>;
 	frameIndex: number;
 	expanded: boolean;
+	showToolCalls: boolean;
 	agents: ActiveAgentSummary[];
 }
 
@@ -280,6 +293,7 @@ export function createCrewWidgetController(): CrewWidgetController {
 	): void => {
 		state.agents = agents;
 		state.expanded = expanded;
+		state.showToolCalls = showToolCalls;
 		state.component.setState(agents, currentFrame(state), expanded, showToolCalls);
 		state.tui.requestRender();
 	};
@@ -311,13 +325,20 @@ export function createCrewWidgetController(): CrewWidgetController {
 					tui,
 					frameIndex: 0,
 					expanded,
+					showToolCalls,
 					agents: active,
-					// The spinner timer only advances the animation; agent data arrives through update().
+					// The spinner timer also re-fetches agent data so durations count up between tool events.
 					timer: setInterval(() => {
 						if (!hasRunningAgent(state.agents)) return;
 						state.frameIndex++;
-						state.component.setFrame(currentFrame(state));
-						state.tui.requestRender();
+						const active = crew.getActiveSummariesForOwner(ctx.sessionManager.getSessionId());
+						if (active.length > 0) {
+							pushAgents(state, active, state.expanded, state.showToolCalls);
+						} else {
+							// Settling clears the widget through update(); keep animating until that arrives.
+							state.component.setFrame(currentFrame(state));
+							state.tui.requestRender();
+						}
 					}, SPINNER_INTERVAL_MS),
 				};
 				state.timer.unref();

@@ -3,6 +3,8 @@ import { fileURLToPath } from "node:url";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { discoverAgents } from "./catalog.js";
 import { crewRuntime, type CrewRuntime } from "./crew.js";
+import { createCrewContextStatus } from "./context-status.js";
+import { registerHerdrMetadata } from "./herdr.js";
 import { addCrewMentionAutocomplete, expandCrewMentionsInMessages } from "./mentions.js";
 import { registerCrewTools } from "./tools.js";
 import { CREW_WIDGET_TOGGLE_SHORTCUT, createCrewWidgetController, registerCrewMessageRenderers } from "./ui.js";
@@ -14,6 +16,7 @@ interface ProcessHooks {
 }
 
 interface RegisterPiCrewExtensionOptions {
+	env?: NodeJS.ProcessEnv;
 	crew?: CrewRuntime;
 	extensionDir?: string;
 	processHooks?: ProcessHooks;
@@ -36,6 +39,7 @@ function setupProcessHooks(crew: CrewRuntime, processHooks: ProcessHooks, setupK
 
 export function registerPiCrewExtension(pi: ExtensionAPI, options: RegisterPiCrewExtensionOptions = {}) {
 	const crew = options.crew ?? crewRuntime;
+	const contextStatus = createCrewContextStatus(crew);
 	let currentCtx: ExtensionContext | undefined;
 	let widgetExpanded = false;
 	let widgetShowToolCalls = true;
@@ -70,7 +74,20 @@ export function registerPiCrewExtension(pi: ExtensionAPI, options: RegisterPiCre
 		addCrewMentionAutocomplete(ctx);
 	});
 
-	pi.on("context", (event) => expandCrewMentionsInMessages(event.messages));
+	pi.on("before_agent_start", (_event, ctx) => {
+		const message = contextStatus.beforeStart(ctx);
+		if (message) return { message };
+	});
+
+	pi.on("context", (event, ctx) => {
+		const messages = contextStatus.observe(event.messages, ctx);
+		return expandCrewMentionsInMessages(messages) ?? (messages !== event.messages ? { messages } : undefined);
+	});
+
+	pi.on("turn_end", (_event, ctx) => {
+		const message = contextStatus.end(ctx);
+		if (message) pi.sendMessage(message, { triggerTurn: false });
+	});
 
 	pi.on("session_shutdown", (event, ctx) => {
 		const sessionId = ctx.sessionManager.getSessionId();
@@ -89,6 +106,7 @@ export function registerPiCrewExtension(pi: ExtensionAPI, options: RegisterPiCre
 		},
 	});
 
+	registerHerdrMetadata(pi, crew, options.env);
 	registerCrewTools(pi, crew, options.extensionDir ?? extensionDir);
 	registerCrewMessageRenderers(pi);
 }

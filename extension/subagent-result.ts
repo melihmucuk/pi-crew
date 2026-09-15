@@ -3,6 +3,8 @@ import { StringEnum, validateToolArguments } from "@earendil-works/pi-ai";
 import type { AssistantMessage, Tool, ToolCall, ToolResultMessage } from "@earendil-works/pi-ai";
 import { defineTool } from "@earendil-works/pi-coding-agent";
 import { Type, type Static } from "typebox";
+import { Text } from "@earendil-works/pi-tui";
+import { jsonToolError, toolErrorText } from "./tool-output.js";
 
 export const SUBAGENT_OUTCOME = {
 	completed: "completed",
@@ -65,12 +67,23 @@ export function createCrewReportTool(): ReturnType<typeof defineTool> {
 		],
 		parameters: crewReportSchema,
 		async execute(_toolCallId, params) {
-			const result = validateReportArgs(params);
-			return {
-				content: [{ type: "text" as const, text: "Final subagent report recorded." }],
-				details: result,
-				terminate: true,
-			};
+			try {
+				const result = validateReportArgs(params);
+				return {
+					content: [{ type: "text" as const, text: "{}" }],
+					details: result,
+					terminate: true,
+				};
+			} catch (error) {
+				throw jsonToolError(error);
+			}
+		},
+		renderResult(result, _options, theme, context) {
+			const content = result.content[0];
+			const text = context.isError
+				? toolErrorText(content?.type === "text" ? content.text : "(no output)")
+				: "Final subagent report recorded.";
+			return new Text(theme.fg(context.isError ? "error" : "success", text), 0, 0);
 		},
 	});
 }
