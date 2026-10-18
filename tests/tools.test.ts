@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { stripVTControlCharacters } from "node:util";
+import { Value } from "typebox/value";
 import { initTheme } from "@earendil-works/pi-coding-agent";
 import { registerCrewTools } from "../extension/tools.js";
 import type { AbortOwnedResult, ActiveAgentSummary } from "../extension/crew.js";
@@ -102,7 +103,11 @@ function setup(opts: { agentModel?: string } = {}) {
 }
 
 async function execute(tools: Map<string, any>, name: string, params: object, ctx: unknown) {
-	return tools.get(name).execute("call-1", params, undefined, undefined, ctx);
+	const tool = tools.get(name);
+	const result = await tool.execute("call-1", params, undefined, undefined, ctx);
+	assert.deepEqual(result.structuredContent, JSON.parse(text(result)), "programmatic results match model-facing JSON");
+	assert.ok(Value.Check(tool.outputSchema, result.structuredContent), `${name} result matches its declared output schema`);
+	return result;
 }
 
 const renderTheme = {

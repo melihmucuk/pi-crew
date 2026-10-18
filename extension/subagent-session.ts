@@ -4,6 +4,9 @@ import type { Api, AssistantMessage, Model } from "@earendil-works/pi-ai";
 import {
 	type AgentSession,
 	createAgentSession,
+	createCodemodeExtension,
+	createMcpExtension,
+	createToolSearchExtension,
 	CredentialSynchronizationError,
 	DefaultResourceLoader,
 	ModelRuntime,
@@ -39,6 +42,7 @@ export interface BootstrapContext {
 	model: Model<Api> | undefined;
 	modelRegistry: ModelRegistry;
 	agentDir: string;
+	projectTrusted: boolean;
 	parentSessionFile?: string;
 }
 
@@ -111,29 +115,30 @@ function resolveTools(agentConfig: AgentConfig): string[] {
 	return [...new Set([...(agentConfig.tools ?? BUILT_IN_TOOL_NAMES), CREW_REPORT_TOOL_NAME])];
 }
 
-function resolveModel(
+export function selectSubagentModel(
 	agentConfig: AgentConfig,
 	currentModel: Model<Api> | undefined,
-	modelRuntime: ModelRuntime,
-): Model<Api> | undefined {
-	if (!agentConfig.parsedModel) {
-		if (agentConfig.model !== undefined) {
-			throw new Error(`Configured model "${agentConfig.model}" is invalid; expected "provider/model-id"`);
-		}
-		return currentModel;
+): { provider: string; modelId: string; inheritedModel?: Model<Api> } | undefined {
+	if (agentConfig.parsedModel) return agentConfig.parsedModel;
+	if (agentConfig.model === undefined && currentModel) {
+		return { provider: currentModel.provider, modelId: currentModel.id, inheritedModel: currentModel };
 	}
-
-	const found = modelRuntime.getModel(agentConfig.parsedModel.provider, agentConfig.parsedModel.modelId);
-	if (found) return found;
-
-	throw new Error(`Configured model "${agentConfig.model}" is not available; subagent was not started`);
 }
 
-function getRequiredProviderIds(agentConfig: AgentConfig, ctx: BootstrapContext): Set<string> {
-	const providerIds = new Set<string>();
-	if (agentConfig.parsedModel) providerIds.add(agentConfig.parsedModel.provider);
-	else if (agentConfig.model === undefined && ctx.model) providerIds.add(ctx.model.provider);
-	return providerIds;
+function resolveModel(
+	agentConfig: AgentConfig,
+	selection: ReturnType<typeof selectSubagentModel>,
+	modelRuntime: ModelRuntime,
+): Model<Api> | undefined {
+	if (selection?.inheritedModel) return selection.inheritedModel;
+	if (selection) {
+		const found = modelRuntime.getModel(selection.provider, selection.modelId);
+		if (found) return found;
+		throw new Error(`Configured model "${agentConfig.model}" is not available; subagent was not started`);
+	}
+	if (agentConfig.model !== undefined) {
+		throw new Error(`Configured model "${agentConfig.model}" is invalid; expected "provider/model-id"`);
+	}
 }
 
 function snapshotProviderConfig(
@@ -172,7 +177,7 @@ async function transferRuntimeApiKey(
 }
 
 async function createChildModelRuntime(
-	agentConfig: AgentConfig,
+	selection: ReturnType<typeof selectSubagentModel>,
 	ctx: BootstrapContext,
 	signal: AbortSignal,
 ): Promise<ModelRuntime> {
@@ -182,7 +187,6 @@ async function createChildModelRuntime(
 		allowModelNetwork: false,
 		signal,
 	});
-	const requiredProviderIds = getRequiredProviderIds(agentConfig, ctx);
 	const ownerModels = ctx.modelRegistry.getAll();
 
 	for (const providerId of ctx.modelRegistry.getRegisteredProviderIds()) {
@@ -196,7 +200,8 @@ async function createChildModelRuntime(
 		if (config) modelRuntime.registerProvider(providerId, snapshotProviderConfig(providerId, config, ownerModels));
 	}
 
-	for (const providerId of requiredProviderIds) {
+	if (selection) {
+		const providerId = selection.provider;
 		const ownerAuth = ctx.modelRegistry.getProviderAuthStatus(providerId);
 		if (ownerAuth.configured && (ownerAuth.source === "runtime" || !await modelRuntime.checkAuth(providerId, { signal }))) {
 			await transferRuntimeApiKey(providerId, ctx.modelRegistry, modelRuntime, signal);
@@ -219,17 +224,54 @@ function getSkillWarnings(agentConfig: AgentConfig, resourceLoader: DefaultResou
 	return warnings;
 }
 
+export function createSubagentSettingsManager(
+	ownerSettings: SettingsManager,
+	compactionEnabled: boolean,
+	warnings: string[],
+): SettingsManager {
+	warnings.push(...ownerSettings.drainErrors().map(({ scope, path, error }) =>
+		path ? `Invalid settings file ${path}: ${error.message}` : `Invalid ${scope} settings: ${error.message}`,
+	));
+	const settings = ownerSettings.getSettings();
+	const childSettings = SettingsManager.inMemory({
+		cacheWarming: ownerSettings.getGlobalSettings().cacheWarming,
+		compaction: { ...settings.compaction, enabled: compactionEnabled },
+		codemode: settings.codemode,
+		defaultTools: [
+			...BUILT_IN_TOOL_NAMES,
+			...(ownerSettings.getDefaultTools() ?? []).filter((name) => name === "codemode" || name === "tool_search"),
+			CREW_REPORT_TOOL_NAME,
+		],
+	});
+	childSettings.setProjectTrusted(ownerSettings.isProjectTrusted());
+	return childSettings;
+}
+
+async function closeSession(session: AgentSession): Promise<void> {
+	await session.extensionRunner.emit({ type: "session_shutdown", reason: "quit" });
+	session.dispose();
+}
+
 async function bootstrapSession(opts: BootstrapOptions): Promise<BootstrapResult> {
 	const warnings: string[] = [];
 	const { agentConfig, cwd, ctx, extensionResolvedPath, signal } = opts;
 
-	const modelRuntime = await createChildModelRuntime(agentConfig, ctx, signal);
-	const model = resolveModel(agentConfig, ctx.model, modelRuntime);
-	const tools = resolveTools(agentConfig);
+	const selection = selectSubagentModel(agentConfig, ctx.model);
+	const modelRuntime = await createChildModelRuntime(selection, ctx, signal);
+	const model = resolveModel(agentConfig, selection, modelRuntime);
+	const tools = agentConfig.tools === undefined ? undefined : resolveTools(agentConfig);
+	const ownerSettings = SettingsManager.create(cwd, ctx.agentDir, { projectTrusted: ctx.projectTrusted });
+	const settingsManager = createSubagentSettingsManager(ownerSettings, agentConfig.compaction ?? true, warnings);
 
 	const resourceLoader = new DefaultResourceLoader({
 		cwd,
 		agentDir: ctx.agentDir,
+		settingsManager: ownerSettings,
+		extensionFactories: [
+			{ name: "codemode", factory: createCodemodeExtension(), builtin: true, replaceable: true },
+			{ name: "tool-search", factory: createToolSearchExtension(), builtin: true, replaceable: true },
+			{ name: "mcp", factory: createMcpExtension(), builtin: true, replaceable: true },
+		],
 		extensionsOverride: (base) => ({
 			...base,
 			extensions: base.extensions.filter((ext) => !ext.resolvedPath.startsWith(extensionResolvedPath)),
@@ -245,10 +287,6 @@ async function bootstrapSession(opts: BootstrapOptions): Promise<BootstrapResult
 	await resourceLoader.reload();
 	signal.throwIfAborted();
 	warnings.push(...getSkillWarnings(agentConfig, resourceLoader));
-
-	const settingsManager = SettingsManager.inMemory({
-		compaction: { enabled: agentConfig.compaction ?? true },
-	});
 
 	const sessionDir = ctx.parentSessionFile ? dirname(ctx.parentSessionFile) : join(ctx.agentDir, "sessions");
 	const sessionManager = SessionManager.create(cwd, sessionDir);
@@ -267,7 +305,14 @@ async function bootstrapSession(opts: BootstrapOptions): Promise<BootstrapResult
 		modelRuntime,
 	});
 
-	return { session: result.session, warnings };
+	try {
+		await result.session.bindExtensions({});
+		signal.throwIfAborted();
+		return { session: result.session, warnings };
+	} catch (error) {
+		await closeSession(result.session);
+		throw error;
+	}
 }
 
 function getAssistantText(message: AssistantMessage | undefined): string | undefined {
@@ -353,7 +398,7 @@ export class SubagentSessionRunner implements SubagentRunner {
 		if (!handle) return;
 		this.handles.delete(state);
 		handle.unsubscribe?.();
-		handle.session?.dispose();
+		if (handle.session) void closeSession(handle.session);
 	}
 
 	/** Only settlement path: a prompt cycle settles once, and an aborted handle never settles. */
@@ -407,7 +452,7 @@ export class SubagentSessionRunner implements SubagentRunner {
 
 	private attachSpawnedSession(state: SubagentState, handle: SubagentHandle, session: AgentSession): boolean {
 		if (this.handles.get(state) !== handle || handle.aborted) {
-			session.dispose();
+			void closeSession(session);
 			return false;
 		}
 		handle.session = session;

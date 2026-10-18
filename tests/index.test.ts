@@ -26,7 +26,7 @@ interface ExtensionContextStub {
 	sessionManager: {
 		getSessionId: () => string;
 		getSessionFile: () => string | undefined;
-		buildContextEntries: () => unknown[];
+		buildSessionProjection: () => { messages: AgentMessage[] };
 	};
 	isProjectTrusted: () => boolean;
 	ui: {
@@ -123,7 +123,7 @@ function context(
 		sessionManager: {
 			getSessionId: () => sessionId,
 			getSessionFile: () => sessionFile,
-			buildContextEntries: () => [],
+			buildSessionProjection: () => ({ messages: [] }),
 		},
 		isProjectTrusted: () => true,
 		ui: {
@@ -179,7 +179,7 @@ describe("extension lifecycle wiring", () => {
 		assert.equal(initial?.display, false);
 		const messages = [{ ...initial, role: "custom", timestamp: 1 }] as AgentMessage[];
 		const before = structuredClone(messages);
-		ctx.sessionManager.buildContextEntries = () => [{ ...initial, type: "custom_message", timestamp: new Date(1).toISOString() }];
+		ctx.sessionManager.buildSessionProjection = () => ({ messages });
 		handlers.context?.({ messages }, ctx);
 		assert.deepEqual(messages, before);
 		assert.equal(sentMessages.length, 0);
@@ -188,6 +188,20 @@ describe("extension lifecycle wiring", () => {
 		assert.equal(sentMessages.length, 1);
 		assert.deepEqual(sentMessages[0].options, { triggerTurn: false });
 		assert.deepEqual(JSON.parse((sentMessages[0].message as { content: string }).content).agents, []);
+	});
+
+	it("adds status to runs started by a delivered subagent result", () => {
+		const { crew, handlers } = setup();
+		crew.summaries = [widgetSummary()];
+		const event = {
+			messageType: "custom",
+			message: { role: "custom", customType: "crew-result", content: "{}", display: true, timestamp: 1 },
+		};
+
+		const message = handlers.before_agent_start?.(event, context())?.message;
+
+		assert.equal(message?.customType, "crew-status");
+		assert.deepEqual(JSON.parse(message!.content).agents, [{ id: "scout-1234", status: "running" }]);
 	});
 
 	it("registers mention autocomplete only for TUI sessions", () => {

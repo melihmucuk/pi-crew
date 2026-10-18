@@ -37,9 +37,9 @@ Use `<name>.md` as the filename. Check for an existing definition with the same 
 Use only the supported agent fields. The [field reference](../../../docs/configuration.md#frontmatter-fields) owns accepted values and defaults; the guidance here explains how to choose them.
 
 - `name` and `description` are required. Prefer a short lowercase, hyphenated name that describes the role and also works with `@crew:name`.
-- `model`: omit to inherit the owner's model unless the user chose a specific one. A configured `provider/model-id` must be available exactly; do not invent an ID or silently substitute another model.
+- `model`: omit to inherit the owner's model unless the user chose a specific one. A configured `provider/model-id` must be available exactly and must be a physical model; virtual models are not supported. Do not invent an ID or silently substitute another model.
 - `thinking`: set only when there is a role-specific or user-requested reason; use a supported value.
-- `tools`: choose the tools needed for the work. Omission grants all built-ins, not zero tools. Use an explicit list for a restricted role; `[]` means no task tools. Custom tools require their registering extension in the child session. A `+`/`-` list modifies the built-in set in a definition; use a plain list when you mean an allowlist.
+- `tools`: choose the tools needed for the work. Omission grants all built-ins and available default-active extension/MCP tools, not zero tools. Use an explicit list for a restricted role; `[]` means no task tools. Custom tools require their registering extension in the child session. A `+`/`-` list modifies the built-in set in a definition; use a plain list when you mean an allowlist.
 - `skills`: list the verified skills the role depends on. Omission exposes all discovered skills; `[]` exposes none. Selecting a skill does not supply missing tools or force the agent to read it—put required read triggers in the body.
 - `compaction`: omit for the default `true` unless the task has an explicit reason to disable it.
 

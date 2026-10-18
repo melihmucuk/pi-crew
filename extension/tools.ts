@@ -1,11 +1,12 @@
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
+import type { JsonObject } from "@earendil-works/pi-ai";
 import * as piCodingAgent from "@earendil-works/pi-coding-agent";
 import type {
   ExtensionAPI,
   ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 import { Box, Spacer, Text, type Component } from "@earendil-works/pi-tui";
-import { Type } from "typebox";
+import { Type, type Static } from "typebox";
 import {
   discoverAgents,
   type AgentConfig,
@@ -34,6 +35,35 @@ export type CrewToolResult = AgentToolResult<unknown>;
 
 const PROJECT_CONFIG_DIR_NAME = piCodingAgent.CONFIG_DIR_NAME ?? ".pi";
 
+const crewListOutputSchema = Type.Object({
+  agents: Type.Array(Type.Object({
+    name: Type.String(), description: Type.String(),
+    model: Type.Union([Type.String(), Type.Null()]),
+    thinking: Type.Union([Type.String(), Type.Null()]),
+  }, { additionalProperties: false })),
+  warnings: Type.Array(Type.Object({
+    message: Type.String(), file_path: Type.String(),
+  }, { additionalProperties: false })),
+}, { additionalProperties: false });
+
+const crewStatusOutputSchema = Type.Object({
+  agents: Type.Array(Type.Object({
+    id: Type.String(), name: Type.String(), brief: Type.String(), status: Type.String(),
+  }, { additionalProperties: false })),
+}, { additionalProperties: false });
+
+const crewIdOutputSchema = Type.Object({ subagent_id: Type.String() }, { additionalProperties: false });
+const crewAbortOutputSchema = Type.Object({
+  aborted_ids: Type.Array(Type.String()),
+  missing_ids: Type.Array(Type.String()),
+  foreign_ids: Type.Array(Type.String()),
+}, { additionalProperties: false });
+
+type CrewListOutput = Static<typeof crewListOutputSchema>;
+type CrewStatusOutput = Static<typeof crewStatusOutputSchema>;
+type CrewIdOutput = Static<typeof crewIdOutputSchema>;
+type CrewAbortOutput = Static<typeof crewAbortOutputSchema>;
+
 type RegisteredTool = Parameters<ExtensionAPI["registerTool"]>[0];
 type ToolRenderCall = Exclude<RegisteredTool["renderCall"], undefined>;
 
@@ -52,12 +82,13 @@ function getToolContext(ctx: ExtensionContext): ToolContext {
 }
 
 function toolSuccess(
-  payload: Record<string, unknown>,
+  payload: JsonObject,
   details: Record<string, unknown> = payload,
   options: { terminate?: boolean } = {},
 ): CrewToolResult {
   return {
     content: [{ type: "text", text: JSON.stringify(payload) }],
+    structuredContent: payload,
     details,
     ...(options.terminate ? { terminate: true } : {}),
   };
@@ -127,7 +158,7 @@ function buildCrewStatusDetails(active: ActiveAgentSummary[]): CrewStatusDetails
   };
 }
 
-function crewListModelContent(details: CrewListDetails): Record<string, unknown> {
+function crewListModelContent(details: CrewListDetails): CrewListOutput {
   return {
     agents: details.agents.map((agent) => ({
       name: agent.name,
@@ -142,7 +173,7 @@ function crewListModelContent(details: CrewListDetails): Record<string, unknown>
   };
 }
 
-function crewStatusModelContent(details: CrewStatusDetails): Record<string, unknown> {
+function crewStatusModelContent(details: CrewStatusDetails): CrewStatusOutput {
   return {
     agents: details.subagents.map((agent) => ({
       id: agent.id,
@@ -260,6 +291,7 @@ export function registerCrewTools(
     label: "List Crew",
     description: "List available subagent definitions and discovery warnings.",
     parameters: Type.Object({}),
+    outputSchema: crewListOutputSchema,
     promptSnippet: "List available subagent definitions for discovery.",
     promptGuidelines: [
       "crew_list: Use for discovery of subagent definitions; use crew_status for a snapshot of your open subagents.",
@@ -297,6 +329,7 @@ export function registerCrewTools(
     label: "Crew Status",
     description: "Snapshot the open subagents owned by the current session.",
     parameters: Type.Object({}),
+    outputSchema: crewStatusOutputSchema,
     promptSnippet: "Snapshot this session's open subagents.",
     promptGuidelines: [
       "crew_status: Use for a one-time snapshot of your open subagents; results arrive automatically, so never poll it for completion.",
@@ -325,6 +358,7 @@ export function registerCrewTools(
   registerActionTool<{ subagent: string; brief: string; task: CrewTask }>(pi, {
     name: "crew_spawn",
     label: "Spawn Crew",
+    outputSchema: crewIdOutputSchema,
     description: "Spawn a non-blocking subagent in an isolated session.",
     parameters: Type.Object({
       subagent: Type.String({ description: "Subagent name from crew_list" }),
@@ -370,12 +404,13 @@ export function registerCrewTools(
           model: ctx.model,
           modelRegistry: ctx.modelRegistry,
           agentDir: piCodingAgent.getAgentDir(),
+          projectTrusted: toolCtx.projectTrusted,
           parentSessionFile: ctx.sessionManager.getSessionFile(),
           onWarning: (msg) => ctx.ui.notify(msg, "warning"),
         },
         extensionDir,
       );
-      return toolSuccess({ subagent_id: id }, { action: "spawn", subagent_id: id, name: subagent.name } satisfies CrewActionResult);
+      return toolSuccess({ subagent_id: id } satisfies CrewIdOutput, { action: "spawn", subagent_id: id, name: subagent.name } satisfies CrewActionResult);
     },
     renderCall(args, theme, context) {
       const subagent = args.subagent || "...";
@@ -406,6 +441,7 @@ export function registerCrewTools(
   }>(pi, {
     name: "crew_abort",
     label: "Abort Crew",
+    outputSchema: crewAbortOutputSchema,
     description: "Abort active subagents owned by this session.",
     parameters: Type.Object({
       subagent_id: Type.Optional(
@@ -447,7 +483,7 @@ export function registerCrewTools(
         if (abortedIds.length === 0) {
           throw new Error("No active subagents in the current session.");
         }
-        const payload = { aborted_ids: abortedIds, missing_ids: [], foreign_ids: [] };
+        const payload: CrewAbortOutput = { aborted_ids: abortedIds, missing_ids: [], foreign_ids: [] };
         return toolSuccess(payload, { action: "abort", ...payload } satisfies CrewActionResult, { terminate: true });
       }
 
@@ -457,7 +493,7 @@ export function registerCrewTools(
       const result = crew.abortOwned(ids, callerSessionId, {
         reason: "Aborted by tool request",
       });
-      const payload = {
+      const payload: CrewAbortOutput = {
         aborted_ids: result.abortedIds,
         missing_ids: result.missingIds,
         foreign_ids: result.foreignIds,
@@ -481,6 +517,7 @@ export function registerCrewTools(
   registerActionTool<{ subagent_id: string; message: string }>(pi, {
     name: "crew_respond",
     label: "Respond to Crew",
+    outputSchema: crewIdOutputSchema,
     description: "Send a follow-up to a subagent awaiting an owner action. Only use when the subagent is completed or needs_input. Do not send messages while it is running. It remembers its own session, not yours.",
     parameters: Type.Object({
       subagent_id: Type.String({
@@ -504,7 +541,7 @@ export function registerCrewTools(
         callerSessionId,
       );
       if (error) throw new Error(error);
-      return toolSuccess({ subagent_id: params.subagent_id }, { action: "respond", subagent_id: params.subagent_id } satisfies CrewActionResult);
+      return toolSuccess({ subagent_id: params.subagent_id } satisfies CrewIdOutput, { action: "respond", subagent_id: params.subagent_id } satisfies CrewActionResult);
     },
     renderCall(args, theme, _context) {
       return renderCrewCall(
@@ -519,6 +556,7 @@ export function registerCrewTools(
   registerActionTool<{ subagent_id: string }>(pi, {
     name: "crew_done",
     label: "Done with Crew",
+    outputSchema: crewIdOutputSchema,
     description: "Close a subagent awaiting an owner action after its delivered result is verified.",
     parameters: Type.Object({
       subagent_id: Type.String({ description: "ID of the subagent to close" }),
@@ -531,7 +569,7 @@ export function registerCrewTools(
       const { callerSessionId } = getToolContext(ctx);
       const { error } = crew.done(params.subagent_id, callerSessionId);
       if (error) throw new Error(error);
-      return toolSuccess({ subagent_id: params.subagent_id }, { action: "done", subagent_id: params.subagent_id } satisfies CrewActionResult);
+      return toolSuccess({ subagent_id: params.subagent_id } satisfies CrewIdOutput, { action: "done", subagent_id: params.subagent_id } satisfies CrewActionResult);
     },
     renderCall(args, theme, _context) {
       return renderCrewCall(theme, "crew_done", args.subagent_id || "...");

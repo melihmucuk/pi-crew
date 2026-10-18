@@ -1,4 +1,6 @@
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { setTimeout as delay } from "node:timers/promises";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -8,20 +10,27 @@ import assert from "node:assert/strict";
 import {
 	createFauxCore,
 	fauxAssistantMessage,
+	getCurrentTools,
 	fauxToolCall,
 	type Api,
 	type Context,
 	type FauxResponseStep,
+	type JsonObject,
 	type Model,
 	type Provider,
 	type SimpleStreamOptions,
 } from "@earendil-works/pi-ai";
-import { ModelRegistry, ModelRuntime } from "@earendil-works/pi-coding-agent";
+import { ModelRegistry, ModelRuntime, SettingsManager } from "@earendil-works/pi-coding-agent";
 import type { AgentConfig } from "../extension/catalog.js";
 import type { SubagentState } from "../extension/crew.js";
 import { createCrewReportTool, CREW_REPORT_REMINDER, CREW_REPORT_TOOL_NAME } from "../extension/subagent-result.js";
 import type { SubagentSettlement } from "../extension/subagent-status.js";
-import { SubagentSessionRunner, type SubagentRunnerCallbacks, type SubagentUsage } from "../extension/subagent-session.js";
+import {
+	createSubagentSettingsManager,
+	SubagentSessionRunner,
+	type SubagentRunnerCallbacks,
+	type SubagentUsage,
+} from "../extension/subagent-session.js";
 import type { CrewTask } from "../extension/task.js";
 
 const DYNAMIC_PROVIDER = "pi-crew-dynamic-test";
@@ -102,6 +111,8 @@ async function createSdkFixture(t: TestContext, prefix: string) {
 	const cwd = join(root, "repo");
 	const agentDir = join(root, "agent");
 	await Promise.all([mkdir(cwd), mkdir(agentDir)]);
+	const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+	process.env.PI_CODING_AGENT_DIR = agentDir;
 	const ownerRuntime = await ModelRuntime.create({
 		authPath: join(agentDir, "auth.json"),
 		modelsPath: join(agentDir, "models.json"),
@@ -111,6 +122,8 @@ async function createSdkFixture(t: TestContext, prefix: string) {
 	const cleanups: Array<() => void> = [];
 	t.after(async () => {
 		for (const cleanup of cleanups) cleanup();
+		if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+		else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
 		await rm(root, { recursive: true, force: true });
 	});
 	return { root, cwd, agentDir, ownerRuntime, ownerRegistry, cleanups };
@@ -122,6 +135,7 @@ function runToSettlement(
 	state: SubagentState,
 	opts: {
 		model?: Model<Api>;
+		projectTrusted?: boolean;
 		onWarning?: (warning: string) => void;
 		onToolStart?: SubagentRunnerCallbacks["onToolStart"];
 		onToolEnd?: SubagentRunnerCallbacks["onToolEnd"];
@@ -142,7 +156,12 @@ function runToSettlement(
 
 	runner.start(state, {
 		cwd: fixture.cwd,
-		ctx: { model: opts.model, modelRegistry: fixture.ownerRegistry, agentDir: fixture.agentDir },
+		ctx: {
+			model: opts.model,
+			modelRegistry: fixture.ownerRegistry,
+			agentDir: fixture.agentDir,
+			projectTrusted: opts.projectTrusted ?? true,
+		},
 		extensionResolvedPath: join(fixture.root, "pi-crew", "extension"),
 		onWarning: opts.onWarning,
 	});
@@ -197,7 +216,7 @@ function nativeFauxProvider(
 function startWithStubBootstrap(runner: SubagentSessionRunner, state: SubagentState): void {
 	runner.start(state, {
 		cwd: "/repo",
-		ctx: { model: undefined, modelRegistry: {} as never, agentDir: "/agent" },
+		ctx: { model: undefined, modelRegistry: {} as never, agentDir: "/agent", projectTrusted: true },
 		extensionResolvedPath: "/pkg/extension",
 	});
 }
@@ -267,7 +286,7 @@ export default function (pi) {
 		const settled = nextSettlement();
 		runner.start(state, {
 			cwd,
-			ctx: { model: undefined, modelRegistry: ownerRegistry, agentDir },
+			ctx: { model: undefined, modelRegistry: ownerRegistry, agentDir, projectTrusted: true },
 			extensionResolvedPath: join(root, "pi-crew", "extension"),
 		});
 		return settled;
@@ -311,13 +330,15 @@ describe("SubagentSessionRunner SDK bootstrap", () => {
 import { Type } from ${JSON.stringify(TYPEBOX_MODULE_URL)};
 
 export default function (pi) {
+	let started = false;
+	pi.on("session_start", () => { started = true; });
 	pi.registerTool({
 		name: "custom_echo",
 		label: "Custom Echo",
 		description: "Echo a message from the child session",
 		parameters: Type.Object({ message: Type.String() }),
 		async execute(_toolCallId, params) {
-			return { content: [{ type: "text", text: \`[child] \${params.message}\` }], details: {} };
+			return { content: [{ type: "text", text: \`[child] \${started ? params.message : "session_start missing"}\` }], details: {} };
 		},
 	});
 }
@@ -465,6 +486,17 @@ export default function (pi) {
 		assert.equal(faux.state.callCount, 0);
 		assert.equal(unavailableState.sessionFile, undefined);
 
+		const invalidState = makeState("strict-model-invalid", agentConfigFor(agentDir, "invalid-model", {
+			model: "invalid-model-format",
+		}));
+		const invalid = await run(invalidState);
+		assert.deepEqual(invalid.outcome, {
+			status: "error",
+			error: 'Configured model "invalid-model-format" is invalid; expected "provider/model-id"',
+		});
+		assert.equal(faux.state.callCount, 0, "invalid configuration must not fall back to the owner model");
+		assert.equal(invalidState.sessionFile, undefined);
+
 		faux.setResponses([completedReport("owner model inherited", "inherited-report")]);
 		const inheritedState = makeState("strict-model-inherited", agentConfigFor(agentDir, "inherited-model"));
 		const inherited = await run(inheritedState);
@@ -485,7 +517,7 @@ export default function (pi) {
 		const modelId = "native-model";
 		const faux = createFauxCore({ provider: providerId, models: [{ id: modelId }] });
 		faux.setResponses([(context) => {
-			assert.deepEqual(context.tools?.map((tool) => tool.name).sort(), [
+			assert.deepEqual(getCurrentTools(context.messages).map((tool) => tool.name).sort(), [
 				"bash", CREW_REPORT_TOOL_NAME, "edit", "find", "grep", "ls", "powershell", "read", "write",
 			].sort());
 			return completedReport("native child prompt succeeded", "native-report");
@@ -530,6 +562,232 @@ export default function (pi) {
 		assert.ok(refreshNetworkValues.every((allowNetwork) => !allowNetwork));
 		assert.equal(state.model, `${providerId}/${modelId}`);
 		assert.equal(state.thinking, "off");
+	});
+
+	it("inherits codemode settings and connects trusted MCP tools without loading untrusted project resources", async (t) => {
+		const fixture = await createSdkFixture(t, "pi-crew-capabilities-");
+		const { root, cwd, agentDir, ownerRuntime } = fixture;
+		const loaded = join(root, "extension-loaded");
+		const started = join(root, "extension-started");
+		const stopped = join(root, "extension-stopped");
+		const serverStarted = join(root, "server-started");
+		const serverStopped = join(root, "server-stopped");
+		await mkdir(join(cwd, ".pi", "extensions"), { recursive: true });
+		await writeFile(join(cwd, ".pi", "extensions", "lifecycle.ts"), `
+import { writeFileSync } from "node:fs";
+export default function (pi) {
+	writeFileSync(${JSON.stringify(loaded)}, "loaded");
+	pi.on("session_start", () => writeFileSync(${JSON.stringify(started)}, "started"));
+	pi.on("session_shutdown", () => writeFileSync(${JSON.stringify(stopped)}, "stopped"));
+}
+`);
+		const serverPath = join(root, "mcp-server.mjs");
+		await writeFile(serverPath, `
+import { createInterface } from "node:readline";
+import { writeFileSync } from "node:fs";
+writeFileSync(${JSON.stringify(serverStarted)}, "started");
+process.stdin.on("end", () => writeFileSync(${JSON.stringify(serverStopped)}, "stopped"));
+createInterface({ input: process.stdin }).on("line", (line) => {
+	const request = JSON.parse(line);
+	if (request.id === undefined) return;
+	let result;
+	if (request.method === "initialize") result = {
+		protocolVersion: request.params.protocolVersion, capabilities: { tools: {} },
+		serverInfo: { name: "crew-fixture", version: "1" },
+	};
+	else if (request.method === "tools/list") result = { tools: [{
+		name: "echo", description: "Return the input value",
+		inputSchema: { type: "object", properties: { value: { type: "number" } }, required: ["value"] },
+		outputSchema: { type: "object", properties: { value: { type: "number" } }, required: ["value"] },
+	}] };
+	else if (request.method === "tools/call") result = {
+		content: [{ type: "text", text: String(request.params.arguments.value) }],
+		structuredContent: { value: request.params.arguments.value },
+	};
+	else result = {};
+	process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id: request.id, result }) + "\\n");
+});
+`);
+		await writeFile(join(agentDir, "settings.json"), JSON.stringify({
+			defaultTools: ["+codemode"], codemode: { mode: "only", inlineBudget: 100 },
+		}));
+		await writeFile(join(cwd, ".pi", "mcp.json"), JSON.stringify({ mcpServers: {
+			fixture: { command: process.execPath, args: [serverPath], exposure: "deferred" },
+		} }));
+		const faux = createFauxCore({ provider: "crew-capabilities", models: [{ id: "offline" }] });
+		ownerRuntime.registerProvider("crew-capabilities", {
+			baseUrl: "https://offline.invalid", api: faux.api as Api, models: faux.models, streamSimple: faux.streamSimple,
+		});
+		await ownerRuntime.setRuntimeApiKey("crew-capabilities", RUNTIME_KEY);
+		const config = agentConfigFor(agentDir, "capabilities", { tools: undefined });
+		faux.setResponses([(context) => {
+			assert.ok(getCurrentTools(context.messages).some((tool) => tool.name === "codemode"));
+			assert.ok(!JSON.stringify(context.messages).includes("mcp__fixture__echo"));
+			return completedReport("untrusted", "untrusted-report");
+		}]);
+		const untrusted = await runToSettlement(fixture, createState("untrusted", config), {
+			model: faux.models[0], projectTrusted: false,
+		});
+		assert.equal(untrusted.status, "completed");
+		assert.equal(existsSync(loaded), false);
+		assert.equal(existsSync(serverStarted), false);
+
+		let nestedResult = "";
+		faux.setResponses([
+			(context) => {
+				const names = getCurrentTools(context.messages).map((tool) => tool.name);
+				assert.ok(names.includes("codemode"));
+				assert.ok(names.includes("tool_search"));
+				assert.ok(names.includes(CREW_REPORT_TOOL_NAME), "model-only report stays declared in codemode-only mode");
+				assert.ok(!names.includes("read"), "the owner's codemode-only setting is inherited");
+				return fauxAssistantMessage(fauxToolCall("codemode", {
+					code: "const result = await tools.mcp__fixture__echo({ value: 42 }); text(result.structuredContent.value);",
+				}, { id: "codemode-mcp" }));
+			},
+			(context) => {
+				const result = context.messages.at(-1);
+				if (result?.role === "toolResult") nestedResult = JSON.stringify(result.content);
+				return completedReport("trusted MCP succeeded", "trusted-report");
+			},
+		]);
+		const events: string[] = [];
+		const trusted = await runToSettlement(fixture, createState("trusted", config), {
+			model: faux.models[0], projectTrusted: true,
+			onToolStart: (_state, tool) => events.push(tool.name),
+		});
+		assert.deepEqual(trusted, { status: "completed", result: { outcome: "completed", report: "trusted MCP succeeded" } });
+		assert.match(nestedResult, /Script completed.*42/);
+		assert.ok(events.includes("mcp__fixture__echo"));
+		assert.equal(existsSync(loaded), true);
+		assert.equal(existsSync(started), true);
+		fixture.cleanups.pop()!();
+		for (let attempt = 0; attempt < 100 && !existsSync(serverStopped); attempt++) await delay(20);
+		assert.equal(existsSync(stopped), true, "child extensions receive shutdown before disposal");
+		assert.equal(existsSync(serverStopped), true, "closing the child closes its MCP server");
+	});
+
+	it("blocks nested crew_report calls while accepting the direct final report", async (t) => {
+		const fixture = await createSdkFixture(t, "pi-crew-nested-report-");
+		await mkdir(join(fixture.agentDir, "extensions"));
+		await writeFile(join(fixture.agentDir, "extensions", "nested-report.ts"), `
+import { Type } from ${JSON.stringify(TYPEBOX_MODULE_URL)};
+export default function (pi) {
+	pi.registerTool({
+		name: "nested_report", label: "Nested Report", description: "Try a nested report", parameters: Type.Object({}),
+		async execute(_id, _params, _signal, _update, ctx) {
+			const result = await ctx.executeTool("crew_report", { outcome: "completed", report: "Nested" });
+			return { content: result.result.content, details: { blocked: result.isError } };
+		},
+	});
+}
+`);
+		const faux = createFauxCore({ provider: "crew-nested", models: [{ id: "offline" }] });
+		let nestedResult = "";
+		faux.setResponses([
+			fauxAssistantMessage(fauxToolCall("nested_report", {}, { id: "nested" })),
+			(context) => {
+				const result = context.messages.at(-1);
+				if (result?.role === "toolResult") nestedResult = JSON.stringify(result.content);
+				return completedReport("Direct report", "direct");
+			},
+		]);
+		fixture.ownerRuntime.registerProvider("crew-nested", {
+			baseUrl: "https://offline.invalid", api: faux.api as Api, models: faux.models, streamSimple: faux.streamSimple,
+		});
+		await fixture.ownerRuntime.setRuntimeApiKey("crew-nested", RUNTIME_KEY);
+		const events: Array<{ id: string; isError: boolean }> = [];
+		const outcome = await runToSettlement(fixture, createState("nested", agentConfigFor(fixture.agentDir, "nested", {
+			tools: ["nested_report"],
+		})), { model: faux.models[0], onToolEnd: (_state, id, isError) => events.push({ id, isError }) });
+		assert.deepEqual(outcome, { status: "completed", result: { outcome: "completed", report: "Direct report" } });
+		assert.match(nestedResult, /Tool crew_report not found/);
+		assert.deepEqual(events, [
+			{ id: "nested/1", isError: true },
+			{ id: "nested", isError: false },
+			{ id: "direct", isError: false },
+		]);
+	});
+
+	it("inherits cache warming and trusted compaction settings while preserving agent control", async (t) => {
+		const fixture = await createSdkFixture(t, "pi-crew-settings-");
+		const model = { provider: "settings-provider", id: "settings-model" };
+		const ordinaryModel = { provider: "settings-provider", id: "ordinary-model" };
+		await mkdir(join(fixture.cwd, ".pi"));
+		await writeFile(join(fixture.agentDir, "settings.json"), JSON.stringify({
+			cacheWarming: "off",
+			compaction: {
+				enabled: false,
+				reserveTokens: 1_000,
+				keepRecentTokens: 2_000,
+				modelOverrides: {
+					"settings-provider/settings-model": { reserveTokens: 4_000 },
+				},
+			},
+		}));
+		await writeFile(join(fixture.cwd, ".pi", "settings.json"), JSON.stringify({
+			cacheWarming: "idle",
+			compaction: {
+				keepRecentTokens: 3_000,
+				modelOverrides: {
+					"settings-provider/settings-model": { keepRecentTokens: 5_000 },
+				},
+			},
+		}));
+
+		const settingsWarnings: string[] = [];
+		const settings = createSubagentSettingsManager(SettingsManager.create(fixture.cwd, fixture.agentDir, { projectTrusted: true }), false, settingsWarnings);
+
+		assert.deepEqual(settingsWarnings, []);
+		assert.equal(settings.getCacheWarmingMode(), "off");
+		assert.deepEqual(settings.getCompactionSettings(model), {
+			enabled: false,
+			reserveTokens: 4_000,
+			keepRecentTokens: 5_000,
+		});
+		assert.deepEqual(settings.getCompactionSettings(ordinaryModel), {
+			enabled: false,
+			reserveTokens: 1_000,
+			keepRecentTokens: 3_000,
+		});
+		assert.equal(
+			createSubagentSettingsManager(SettingsManager.create(fixture.cwd, fixture.agentDir, { projectTrusted: true }), true, []).getCompactionSettings(model).enabled,
+			true,
+		);
+		assert.deepEqual(
+			createSubagentSettingsManager(SettingsManager.create(fixture.cwd, fixture.agentDir, { projectTrusted: false }), false, []).getCompactionSettings(model),
+			{ enabled: false, reserveTokens: 4_000, keepRecentTokens: 2_000 },
+		);
+	});
+
+	it("warns when owner settings cannot be loaded", async (t) => {
+		const fixture = await createSdkFixture(t, "pi-crew-malformed-settings-");
+		const { agentDir, ownerRuntime } = fixture;
+		const providerId = "pi-crew-malformed-settings-test";
+		const modelId = "malformed-settings-model";
+		const faux = createFauxCore({ provider: providerId, models: [{ id: modelId }] });
+		faux.setResponses([completedReport("child prompt succeeded", "malformed-settings-report")]);
+		await writeFile(join(agentDir, "settings.json"), "{");
+		ownerRuntime.registerProvider(providerId, {
+			baseUrl: "https://offline.invalid",
+			api: faux.api as Api,
+			models: faux.models,
+			streamSimple: faux.streamSimple,
+		});
+		await ownerRuntime.setRuntimeApiKey(providerId, RUNTIME_KEY);
+
+		const warnings: string[] = [];
+		const outcome = await runToSettlement(fixture, createState("malformed-settings-1", agentConfigFor(agentDir, "malformed-settings", {
+			model: `${providerId}/${modelId}`,
+			parsedModel: { provider: providerId, modelId },
+		})), { onWarning: (warning) => warnings.push(warning) });
+
+		assert.deepEqual(outcome, {
+			status: "completed",
+			result: { outcome: "completed", report: "child prompt succeeded" },
+		});
+		assert.equal(warnings.length, 1);
+		assert.ok(warnings[0]?.startsWith(`Invalid settings file ${join(agentDir, "settings.json")}:`));
+		assert.match(warnings[0] ?? "", /JSON/);
 	});
 
 	it("surfaces child credential synchronization failures without retrying the mutation", async (t) => {
@@ -619,6 +877,7 @@ export default function (pi) {
 			markBootstrapStarted = resolve;
 		});
 		const session = {
+			extensionRunner: { emit: async () => {} },
 			dispose: () => {
 				disposed = true;
 			},
@@ -677,6 +936,7 @@ export default function (pi) {
 		};
 		const session = {
 			messages: [] as unknown[],
+			extensionRunner: { emit: async () => {} },
 			dispose: () => {},
 			prompt: async function () {
 				this.messages.push(
@@ -895,7 +1155,7 @@ describe("universal subagent result protocol", () => {
 	});
 
 	it("rejects unknown and conditionally invalid fields", async (t) => {
-		const invalidCalls = [
+		const invalidCalls: JsonObject[] = [
 			{ outcome: "completed", report: "  \n" },
 			{ outcome: "completed", report: "Has forbidden needs", needs: "not allowed" },
 			{ outcome: "needs_input", report: "Missing needs" },

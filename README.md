@@ -20,7 +20,7 @@ From git:
 pi install git:github.com/melihmucuk/pi-crew
 ```
 
-This installs the extension, orchestration skill, prompt templates, and six bundled subagents. Requires Pi 0.84.3 or newer.
+This installs the extension, orchestration skill, prompt templates, and six bundled subagents. Requires Pi 1.0.2 or newer.
 
 ## Quick Start
 
@@ -124,9 +124,9 @@ Override settings without editing definitions using `.pi/pi-crew.json` or `~/.pi
 }
 ```
 
-Project fields override user fields. An omitted model inherits the owner's current model; an explicitly configured model must resolve exactly or spawning fails.
+Project fields override user fields. An omitted model inherits the owner's current model; an explicitly configured model must resolve exactly or spawning fails. Virtual models are not supported; select or configure a physical model before spawning.
 
-The `+` prefix adds a tool without replacing the existing list. Replace `custom_tool_name` with a tool provided by an extension loaded in the child session.
+The `+` prefix adds a tool without replacing the existing list. Replace `custom_tool_name` with a tool provided by an extension loaded in the child session. Subagents can also use Pi's MCP tools, codemode, and tool search when allowed by their tool selection; see [Configuration](docs/configuration.md#pi-tools-and-mcp).
 
 Ask Pi to create a custom agent using the [agent-writing workflow](skills/pi-crew/references/create-agent.md). See [Configuration](docs/configuration.md) for all frontmatter fields, tool and skill selection, override merging, and tool deltas.
 

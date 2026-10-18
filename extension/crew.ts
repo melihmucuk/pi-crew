@@ -20,7 +20,7 @@ import {
 	type SubagentToolActivity,
 } from "./subagent-status.js";
 import type { CrewTask } from "./task.js";
-import { SubagentSessionRunner } from "./subagent-session.js";
+import { selectSubagentModel, SubagentSessionRunner } from "./subagent-session.js";
 import {
 	type AppendEntryFn,
 	type CrewResultPayload,
@@ -101,6 +101,7 @@ export interface SpawnContext {
 	model: Model<Api> | undefined;
 	modelRegistry: ModelRegistry;
 	agentDir: string;
+	projectTrusted: boolean;
 	parentSessionFile?: string;
 	onWarning?: (message: string) => void;
 	brief?: string;
@@ -114,6 +115,7 @@ function toBootstrapContext(ctx: SpawnContext): BootstrapContext {
 		model: ctx.model,
 		modelRegistry: ctx.modelRegistry,
 		agentDir: ctx.agentDir,
+		projectTrusted: ctx.projectTrusted,
 		parentSessionFile: ctx.parentSessionFile,
 	};
 }
@@ -223,6 +225,12 @@ export class CrewRuntime {
 		ctx: SpawnContext,
 		extensionResolvedPath: string,
 	): string {
+		const selection = selectSubagentModel(agentConfig, ctx.model);
+		const selectedModel = selection && (selection.inheritedModel
+			?? ctx.modelRegistry.find(selection.provider, selection.modelId));
+		if (selectedModel?.api === "pi-virtual") {
+			throw new Error(`Virtual model "${selectedModel.provider}/${selectedModel.id}" is not supported by pi-crew; select a physical model before spawning`);
+		}
 		const state = this.createAgent(agentConfig, task, ctx.brief ?? "", ownerSessionId);
 		this.publishRunningCount();
 		this.refreshWidgetFor(ownerSessionId);

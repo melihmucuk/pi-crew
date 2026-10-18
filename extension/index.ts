@@ -80,8 +80,8 @@ export function registerPiCrewExtension(pi: ExtensionAPI, options: RegisterPiCre
 	});
 
 	pi.on("context", (event, ctx) => {
-		const messages = contextStatus.observe(event.messages, ctx);
-		return expandCrewMentionsInMessages(messages) ?? (messages !== event.messages ? { messages } : undefined);
+		contextStatus.observe(ctx);
+		return expandCrewMentionsInMessages(event.messages);
 	});
 
 	pi.on("turn_end", (_event, ctx) => {

@@ -129,10 +129,39 @@ function spawn(crew: CrewRuntime, ownerSessionId = "owner-1", config: AgentConfi
 		task,
 		"/repo",
 		ownerSessionId,
-		{ model: undefined, modelRegistry: {} as never, agentDir: "/home/.pi/agent", brief: "task brief" },
+		{
+			model: undefined,
+			modelRegistry: {} as never,
+			agentDir: "/home/.pi/agent",
+			projectTrusted: true,
+			brief: "task brief",
+		},
 		"/pkg/extension",
 	);
 }
+
+describe("virtual model selection", () => {
+	it("rejects configured and inherited virtual models before creating work, but allows a physical override", () => {
+		const { crew, runner } = setup();
+		const virtual = { provider: "router", id: "auto", api: "pi-virtual" };
+		const physical = { provider: "physical", id: "model", api: "offline" };
+		const ctx = {
+			model: virtual as never,
+			modelRegistry: { find: (provider: string) => provider === "router" ? virtual : physical } as never,
+			agentDir: "/home/.pi/agent", projectTrusted: true,
+		};
+		const configured = { ...agentConfig, model: "router/auto", parsedModel: { provider: "router", modelId: "auto" } };
+		for (const config of [agentConfig, configured]) {
+			assert.throws(() => crew.spawn(config, task, "/repo", "owner-1", ctx, "/pkg/extension"),
+				/Virtual model "router\/auto" is not supported by pi-crew; select a physical model before spawning/);
+		}
+		assert.deepEqual(runner.states, []);
+		assert.deepEqual(crew.getActiveSummariesForOwner("owner-1"), []);
+		crew.spawn({ ...agentConfig, model: "physical/model", parsedModel: { provider: "physical", modelId: "model" } },
+			task, "/repo", "owner-1", ctx, "/pkg/extension");
+		assert.equal(runner.states.length, 1);
+	});
+});
 
 describe("subagent session names", () => {
 	it("formats session names from explicit brief without deriving from task body", () => {

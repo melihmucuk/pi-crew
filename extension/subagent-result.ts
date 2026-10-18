@@ -57,6 +57,7 @@ export function getLastAssistantMessage(messages: AgentMessage[]): AssistantMess
 export function createCrewReportTool(): ReturnType<typeof defineTool> {
 	return defineTool({
 		name: CREW_REPORT_TOOL_NAME,
+		exposure: "model-only",
 		label: "Crew Report",
 		description:
 			"Submit the final subagent result. The report is your complete role-specific final answer, not an additional summary. Write it directly in the tool argument and preserve its Markdown. Use outcome completed when the task is finished, or needs_input when owner input is required.",

@@ -1,6 +1,4 @@
-import { randomUUID } from "node:crypto";
-import type { AgentMessage } from "@earendil-works/pi-agent-core";
-import { sessionEntryToContextMessages, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { CrewRuntime } from "./crew.js";
 import { isSubagentStatusPhase } from "./subagent-status.js";
 
@@ -15,59 +13,7 @@ interface OwnerState {
 	visibleSnapshot?: string;
 }
 
-function contextMessageId(message: AgentMessage): string | undefined {
-	if (message.role !== "custom" || (message.customType !== SNAPSHOT_TYPE && message.customType !== REMINDER_TYPE)) return;
-	const details = message.details;
-	if (!details || typeof details !== "object" || !("crewContextId" in details)) return;
-	return typeof details.crewContextId === "string" ? details.crewContextId : undefined;
-}
-
-function messageKey(message: AgentMessage): string {
-	const id = contextMessageId(message);
-	if (id) return id;
-	if (message.role === "custom") return JSON.stringify([message.role, message.customType, message.content]);
-	return JSON.stringify([message.role, message.timestamp, message.role === "toolResult" ? message.toolCallId : undefined]);
-}
-
-/** Restore only our missing persisted messages, in their original transcript order. */
-function restoreMessages(messages: AgentMessage[], recorded: AgentMessage[]): AgentMessage[] {
-	const present = new Set(messages.map(contextMessageId).filter((id) => id !== undefined));
-	if (!recorded.some((message) => {
-		const id = contextMessageId(message);
-		return id !== undefined && !present.has(id);
-	})) return messages;
-
-	const positions = new Map<string, number[]>();
-	messages.forEach((message, index) => {
-		const key = messageKey(message);
-		const indexes = positions.get(key) ?? [];
-		indexes.push(index);
-		positions.set(key, indexes);
-	});
-	const insertions = new Map<number, AgentMessage[]>();
-	let before = messages.length;
-	for (let index = recorded.length - 1; index >= 0; index--) {
-		const message = recorded[index];
-		const position = positions.get(messageKey(message))?.pop();
-		if (position !== undefined) {
-			before = position;
-		} else if (contextMessageId(message)) {
-			const missing = insertions.get(before) ?? [];
-			missing.push(message);
-			insertions.set(before, missing);
-		}
-	}
-	if (insertions.size === 0) return messages;
-	const restored: AgentMessage[] = [];
-	for (let index = 0; index <= messages.length; index++) {
-		const missing = insertions.get(index);
-		if (missing) restored.push(...missing.reverse());
-		if (index < messages.length) restored.push(messages[index]);
-	}
-	return restored;
-}
-
-/** Emit at safe append boundaries; repair SDK omissions without replacing existing messages. */
+/** Emit at safe append boundaries and observe Pi's canonical model context. */
 export function createCrewContextStatus(crew: CrewRuntime) {
 	const owners = new Map<string, OwnerState>();
 	function state(ctx: ExtensionContext): OwnerState {
@@ -80,15 +26,14 @@ export function createCrewContextStatus(crew: CrewRuntime) {
 		return owner;
 	}
 
-	function recordedContext(ctx: ExtensionContext): AgentMessage[] {
-		const messages = ctx.sessionManager.buildContextEntries().flatMap(sessionEntryToContextMessages);
+	function refreshVisibleSnapshot(ctx: ExtensionContext): void {
+		const messages = ctx.sessionManager.buildSessionProjection().messages;
 		const latest = messages.slice().reverse().find((message) => message.role === "custom" && message.customType === SNAPSHOT_TYPE);
 		state(ctx).visibleSnapshot = latest?.role === "custom" && typeof latest.content === "string" ? latest.content : undefined;
-		return messages;
 	}
 
 	function statusMessage(customType: string, content: string): Message {
-		return { customType, content, display: false, details: { crewContextId: randomUUID() } };
+		return { customType, content, display: false };
 	}
 
 	function nextMessage(ctx: ExtensionContext): Message | undefined {
@@ -115,12 +60,12 @@ export function createCrewContextStatus(crew: CrewRuntime) {
 
 	return {
 		beforeStart(ctx: ExtensionContext): Message | undefined {
-			recordedContext(ctx);
+			refreshVisibleSnapshot(ctx);
 			return nextMessage(ctx);
 		},
-		observe(messages: AgentMessage[], ctx: ExtensionContext): AgentMessage[] {
+		observe(ctx: ExtensionContext): void {
 			state(ctx).calls++;
-			return restoreMessages(messages, recordedContext(ctx));
+			refreshVisibleSnapshot(ctx);
 		},
 		end(ctx: ExtensionContext): Message | undefined {
 			return nextMessage(ctx);

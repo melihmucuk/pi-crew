@@ -18,7 +18,7 @@ Every successful prompt cycle ends with a `crew_report` result:
 
 `report` is non-blank and contains the subagent's complete role-specific final answer; no second summary follows. `needs` is required and non-blank only for `needs_input`, and is forbidden for `completed`. Unknown fields are rejected.
 
-The final tool-call batch must contain only one successful `crew_report` call. Task tools may be used in earlier batches. Acceptance is judged from the cycle's last assistant message and the corresponding tool result.
+The final tool-call batch must contain only one successful, directly model-issued `crew_report` call. The report tool is model-only; nested calls from codemode or another tool are blocked. Task tools may be used in earlier batches. Acceptance is judged from the cycle's last assistant message and the corresponding tool result.
 
 If a normal cycle ends without a valid final report, pi-crew sends one finalization follow-up prompt automatically, visible in the child session. A second reportless normal ending becomes a terminal contract error. Technical `error` and `aborted` endings receive no reminder.
 
@@ -26,7 +26,7 @@ Validation is cycle-local: every `crew_spawn` and `crew_respond` starts fresh. A
 
 ## Tool Results
 
-All pi-crew-produced tool results are JSON in model context. TUI renderers build readable confirmations and cards separately; `details` are not model-bound. Discovery (`crew_list`), open-session snapshots (`crew_status`), asynchronous results, and automatic context messages retain their existing JSON shapes.
+All pi-crew-produced tool results are JSON in model context. Owner tools also declare output schemas and return the same payload as `structuredContent`, so codemode callers receive objects rather than JSON strings. TUI renderers build readable confirmations and cards separately; `details` are not model-bound. Discovery (`crew_list`), open-session snapshots (`crew_status`), asynchronous results, and automatic context messages retain their existing JSON shapes.
 
 Acknowledgements omit redundant `ok` and `action` fields: Pi already associates each result with its tool call and marks errors separately. Spawn, respond, and done return the pi-crew subagent ID, not the Pi session ID:
 
@@ -95,9 +95,9 @@ Pi-crew also appends a compact `crew_status` JSON snapshot containing only open-
 
 A `crew_reminder` JSON message lists only sessions awaiting owner action after ten owner model calls since the last snapshot or reminder. Running sessions do not generate reminders. A snapshot takes priority over a reminder and resets its counter. The interval is an initial policy choice, not a measured optimum.
 
-Context observation counts model calls. Snapshot deduplication reads the compaction-aware session record, not the SDK loop's message list: a persisted turn-end message can be absent from that list even without compaction. Before each model request, pi-crew inserts only its missing persisted status/reminder messages at their recorded positions. Each has a unique ID in non-model-bound details, so an already-present message is not duplicated. Existing messages are never replaced, removed, or reordered. If compaction removes a snapshot from the session context, a fresh snapshot is appended at the next safe boundary while open work exists; compacted messages are never replayed. Status messages are model-visible but hidden in the TUI; they never start an owner turn. There are no timers, automatic tool calls, automatic closes, or final-answer gates.
+Context observation counts model calls. Snapshot deduplication reads Pi's canonical session projection, which applies compaction and context edits. Pi-crew never restores messages that Pi or another extension omitted, and edited snapshots are compared using their effective content. If compaction or a context edit removes a snapshot, a fresh snapshot is appended at the next safe boundary while open work exists; omitted historical messages are never replayed. Existing context messages are never replaced, removed, or reordered by status observation. Status messages are model-visible but hidden in the TUI; they never start an owner turn. There are no timers, automatic tool calls, automatic closes, or final-answer gates.
 
-Previous messages and the system prompt remain unchanged. Repaired messages stay in the same position on subsequent requests instead of moving to the end. The offline SDK regression test checks the actual provider-bound message prefix across requests, including the next owner run; provider cache-hit behavior still requires provider-specific measurement. Snapshots are historical observations, not live authority: the newest snapshot supersedes older ones. Verify completed results and use `crew_done` when no follow-up remains; use `crew_respond` for corrections or requested input.
+Previous messages and the system prompt remain unchanged. Persisted status messages keep their canonical positions across subsequent requests. The offline SDK regression test checks the actual provider-bound message prefix across requests, including the next owner run; provider cache-hit behavior still requires provider-specific measurement. Snapshots are historical observations, not live authority: the newest snapshot supersedes older ones. Verify completed results and use `crew_done` when no follow-up remains; use `crew_respond` for corrections or requested input.
 
 ## TUI Presentation
 

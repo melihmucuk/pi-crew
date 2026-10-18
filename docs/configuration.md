@@ -37,13 +37,21 @@ Your system prompt goes here. The subagent follows these instructions when execu
 | `description` | yes      | Role description shown in `crew_list`.                                                                                                                                                                                   |
 | `model`       | no       | `provider/model-id`, e.g. `anthropic/claude-haiku-4-5`. Omit to use the owner's current model.                                                                                                                           |
 | `thinking`    | no       | `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`.                                                                                                                                                            |
-| `tools`       | no       | Comma-separated list or YAML array of built-in or extension-registered Pi tool names. Omit for all built-ins (`read`, `bash`, `powershell`, `edit`, `write`, `grep`, `find`, `ls`); use an empty value or list for none. |
+| `tools`       | no       | Comma-separated list or YAML array of built-in or extension-registered Pi tool names. Omit for all built-ins and available default-active extension/MCP tools; use an explicit list to restrict tools or an empty value or list for none. |
 | `skills`      | no       | Comma-separated list or YAML array of skill names. Omit for all discovered skills; use an empty value or list for none.                                                                                                  |
 | `compaction`  | no       | Enable context compaction. Defaults to `true`.                                                                                                                                                                           |
 
-Subagents use the owner's Pi model configuration and credentials. A configured model must be available under its exact `provider/model-id`; otherwise the subagent fails before prompting. Only an omitted model inherits the owner's current model.
+Subagents use the owner's Pi model configuration and credentials. A configured model must be available under its exact `provider/model-id`; otherwise the subagent fails before prompting. Only an omitted model inherits the owner's current model. Configured or inherited virtual models are rejected before spawning; choose a physical model instead.
 
-Custom tools are available when their registering extension also loads in the child session. pi-crew itself is excluded to prevent recursive delegation. Read-only agents can still have `bash`: their read-only behavior is an instruction-level contract, not a sandbox boundary.
+Custom tools are available when their registering extension also loads in the child session. pi-crew itself is excluded to prevent recursive delegation. Project-local extensions and other project resources load only when the owner trusts the project. Read-only agents can still have `bash`: their read-only behavior is an instruction-level contract, not a sandbox boundary.
+
+### Pi Tools and MCP
+
+Child sessions load Pi's built-in MCP, codemode, and tool-search extensions unless disabled in Pi settings or replaced by another extension. MCP reads the global `mcp.json` and, in trusted projects, the project `mcp.json`. Connections close when the child session closes.
+
+When `tools` is omitted, the child enables all built-in task tools, inherits enabled `codemode`/`tool_search` from Pi's `defaultTools`, and allows default-active extension tools and MCP discovery to activate tools. Pi's `codemode` settings also apply. An explicit tool list remains an allowlist, including for nested calls: to use codemode with an MCP tool, allow both `codemode` and its full `mcp__<server>__<tool>` name, where characters other than letters, digits, and `_` become `_` (`my-server` becomes `my_server`). Tool deltas resolve to an explicit list too.
+
+`crew_report` is always available directly to the model, regardless of the task-tool selection. It cannot be called through codemode or another tool.
 
 ## JSON Overrides
 

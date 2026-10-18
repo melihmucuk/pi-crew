@@ -88,7 +88,7 @@ it("delivers persisted status and reminders during a real SDK run without duplic
 
 	const keptId = sessionManager.appendMessage({ role: "user", content: "retained after compaction", timestamp: Date.now() });
 	sessionManager.appendCompaction("Earlier work summarized", keptId, 1000);
-	session.agent.state.messages = sessionManager.buildSessionContext().messages;
+	session.refreshContext();
 	await session.prompt("Continue after compaction.");
 	assert.equal(count(requests[14], "crew_status"), 1, "only a fresh snapshot survives compaction");
 	assert.equal(count(requests[14], "crew_reminder"), 0, "compacted reminders are not resurrected");
