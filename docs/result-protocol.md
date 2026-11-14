@@ -103,4 +103,6 @@ Previous messages and the system prompt remain unchanged. Persisted status messa
 
 Results appear as Markdown cards rather than protocol JSON. Each card starts with the outcome icon, subagent ID, and task label, followed by the unchanged report. Needs-input cards put a **Needs** section before the report; error cards show their explanation.
 
-Cards are rendered from structured result details, not copied display text in model context. Aborts render as compact TUI-only cards with the reason and never trigger an owner turn. See [Results and Sessions](../README.md#results-and-sessions) for everyday TUI usage.
+Cards are rendered from structured result details, not copied display text in model context. Aborts render as compact TUI-only cards with the reason and never trigger an owner turn.
+
+The status widget presents lifecycle status through the same table. Running and needs-input subagents keep full detail; completed ones collapse to a single line and only the newest remains visible until details are expanded, so a long orchestration cannot scroll the main thread out of view. Collapsing is presentation only: open subagents stay abortable, respondable, and closable. See [Results and Sessions](../README.md#results-and-sessions) for everyday TUI usage.

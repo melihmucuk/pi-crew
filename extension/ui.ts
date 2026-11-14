@@ -29,20 +29,23 @@ export type SubagentStatusPresentation = {
 	icon: string;
 	label: string;
 	color: "success" | "warning" | "error" | "muted";
+	/** Settled work that needs no owner action gives the screen back to the main thread. */
+	compactWhenSettled: boolean;
 };
 
+// Errors and aborts are terminal, so the runtime disposes them before the widget can show them.
 const SUBAGENT_STATUS_PRESENTATION = {
-	[SUBAGENT_STATUS.running]: { icon: "⏳", label: "running", color: "warning" },
-	[SUBAGENT_STATUS.completed]: { icon: "✅", label: "completed", color: "success" },
-	[SUBAGENT_STATUS.needsInput]: { icon: "⏳", label: "needs input", color: "warning" },
-	[SUBAGENT_STATUS.error]: { icon: "❌", label: "failed", color: "error" },
-	[SUBAGENT_STATUS.aborted]: { icon: "⏹", label: "aborted", color: "error" },
+	[SUBAGENT_STATUS.running]: { icon: "⏳", label: "running", color: "warning", compactWhenSettled: false },
+	[SUBAGENT_STATUS.completed]: { icon: "✅", label: "completed", color: "success", compactWhenSettled: true },
+	[SUBAGENT_STATUS.needsInput]: { icon: "⏳", label: "needs input", color: "warning", compactWhenSettled: false },
+	[SUBAGENT_STATUS.error]: { icon: "❌", label: "failed", color: "error", compactWhenSettled: false },
+	[SUBAGENT_STATUS.aborted]: { icon: "⏹", label: "aborted", color: "error", compactWhenSettled: false },
 } as const satisfies Record<SubagentStatus, SubagentStatusPresentation>;
 
 /** Stored messages from older sessions can carry a status that no longer exists. */
 export function getSubagentStatusPresentation(status: string): SubagentStatusPresentation {
 	return SUBAGENT_STATUS_PRESENTATION[status as SubagentStatus]
-		?? { icon: "❓", label: status || "unknown", color: "muted" };
+		?? { icon: "❓", label: status || "unknown", color: "muted", compactWhenSettled: false };
 }
 
 type SubagentToolStatusPresentation = {
@@ -162,6 +165,8 @@ export function renderCrewResult(result: ToolResult, theme: ToolTheme, isError: 
 export const CREW_WIDGET_TOGGLE_SHORTCUT = "ctrl+shift+e";
 const COMPACT_TOOL_CALL_LIMIT = 3;
 const EXPANDED_TOOL_CALL_LIMIT = 10;
+/** Collapsed, settled agents kept in the widget; details reveal the rest. */
+const COLLAPSED_SETTLED_AGENT_LIMIT = 1;
 const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 const SPINNER_INTERVAL_MS = 80;
 
@@ -195,39 +200,82 @@ export class CrewWidgetComponent implements Component {
 		this.frame = frame;
 	}
 
+	/** Collapsed settled agents keep moving out of the way; details show every one of them. */
+	private isCompact(agent: ActiveAgentSummary): boolean {
+		return !this.expanded && getSubagentStatusPresentation(agent.status).compactWhenSettled;
+	}
+
+	private renderAgent(agent: ActiveAgentSummary, width: number): string[] {
+		const model = sanitizeInline(formatModelLabel(agent.model, agent.modelName) ?? "…");
+		const agentId = sanitizeInline(agent.id);
+		const brief = sanitizeInline(agent.brief ?? "") || sanitizeInline(agent.agentName);
+		const presentation = getSubagentStatusPresentation(agent.status);
+		const icon = isSubagentStatusPhase(agent.status, "in-flight") ? this.frame : presentation.icon;
+		const limit = this.expanded ? EXPANDED_TOOL_CALL_LIMIT : COMPACT_TOOL_CALL_LIMIT;
+		const visibleActivities = agent.toolActivities.slice(-limit);
+		const failures = failureLabel(agent.toolFailureCount);
+		const header = this.theme.fg(presentation.color, icon) + " "
+			+ this.theme.fg("toolTitle", this.theme.bold(agentId))
+			+ this.theme.fg("muted", ` - ${brief}`);
+		const usage = `  ${model} · ${agent.thinking ?? "…"} | ↑ ${formatTokens(agent.inputTokens)} · ↓ ${formatTokens(agent.outputTokens)} · ${formatCost(agent.cost)}`;
+		const progress = `  ${formatDuration(agent.workedMs)} · ${toolCallLabel(agent.toolCallCount)}${failures ? ` · ${failures}` : ""}`;
+		const lines = [
+			truncateToWidth(header, width, "…"),
+			truncateToWidth(this.theme.fg("muted", usage), width, "…"),
+			truncateToWidth(this.theme.fg("muted", progress), width, "…"),
+		];
+		if (!this.showToolCalls) return lines;
+		for (const tool of visibleActivities) {
+			const toolPresentation = SUBAGENT_TOOL_STATUS_PRESENTATION[tool.status];
+			const target = sanitizeInline(tool.target);
+			const name = sanitizeInline(tool.name) === "bash" ? "$" : sanitizeInline(tool.name);
+			const result = toolPresentation.showsResult && tool.resultSummary ? ` · ${sanitizeInline(tool.resultSummary)}` : "";
+			const action = "    " + this.theme.fg(toolPresentation.color, name)
+				+ (target ? this.theme.fg("muted", `  ${target}`) : "")
+				+ (result ? this.theme.fg("accent", result) : "");
+			lines.push(truncateToWidth(action, width, "…"));
+		}
+		return lines;
+	}
+
+	private renderCompactAgent(agent: ActiveAgentSummary, width: number): string {
+		const presentation = getSubagentStatusPresentation(agent.status);
+		const agentId = sanitizeInline(agent.id);
+		const brief = sanitizeInline(agent.brief ?? "") || sanitizeInline(agent.agentName);
+		const summary = [formatDuration(agent.workedMs), toolCallLabel(agent.toolCallCount), failureLabel(agent.toolFailureCount)]
+			.filter((part) => part !== undefined)
+			.join(" · ");
+		return truncateToWidth(
+			this.theme.fg(presentation.color, presentation.icon) + " "
+				+ this.theme.fg("toolTitle", this.theme.bold(agentId))
+				+ this.theme.fg("muted", ` - ${brief} · ${summary}`),
+			width,
+			"…",
+		);
+	}
+
 	render(width: number): string[] {
 		if (width <= 0) return [];
 		const lines: string[] = [];
-		for (const [index, agent] of this.agents.entries()) {
-			if (index > 0) lines.push("");
-			const model = sanitizeInline(formatModelLabel(agent.model, agent.modelName) ?? "…");
-			const agentId = sanitizeInline(agent.id);
-			const brief = sanitizeInline(agent.brief ?? "") || sanitizeInline(agent.agentName);
-			const inFlight = isSubagentStatusPhase(agent.status, "in-flight");
-			const icon = inFlight ? this.frame : getSubagentStatusPresentation(agent.status).icon;
-			const limit = this.expanded ? EXPANDED_TOOL_CALL_LIMIT : COMPACT_TOOL_CALL_LIMIT;
-			const visibleActivities = agent.toolActivities.slice(-limit);
-			const failures = failureLabel(agent.toolFailureCount);
-			const header = this.theme.fg("warning", icon) + " "
-				+ this.theme.fg("toolTitle", this.theme.bold(agentId))
-				+ this.theme.fg("muted", ` - ${brief}`);
-			const usage = `  ${model} · ${agent.thinking ?? "…"} | ↑ ${formatTokens(agent.inputTokens)} · ↓ ${formatTokens(agent.outputTokens)} · ${formatCost(agent.cost)}`;
-			const progress = `  ${formatDuration(agent.workedMs)} · ${toolCallLabel(agent.toolCallCount)}${failures ? ` · ${failures}` : ""}`;
-			lines.push(truncateToWidth(header, width, "…"));
-			lines.push(truncateToWidth(this.theme.fg("muted", usage), width, "…"));
-			lines.push(truncateToWidth(this.theme.fg("muted", progress), width, "…"));
-			if (this.showToolCalls) {
-				for (const tool of visibleActivities) {
-					const presentation = SUBAGENT_TOOL_STATUS_PRESENTATION[tool.status];
-					const target = sanitizeInline(tool.target);
-					const name = sanitizeInline(tool.name) === "bash" ? "$" : sanitizeInline(tool.name);
-					const result = presentation.showsResult && tool.resultSummary ? ` · ${sanitizeInline(tool.resultSummary)}` : "";
-					const action = "    " + this.theme.fg(presentation.color, name)
-						+ (target ? this.theme.fg("muted", `  ${target}`) : "")
-						+ (result ? this.theme.fg("accent", result) : "");
-					lines.push(truncateToWidth(action, width, "…"));
-				}
-			}
+		const compacted = this.agents.filter((agent) => this.isCompact(agent));
+		const hidden = new Set(compacted.slice(0, Math.max(0, compacted.length - COLLAPSED_SETTLED_AGENT_LIMIT)));
+		let rendered = 0;
+		let previousCompact = false;
+		for (const agent of this.agents) {
+			if (hidden.has(agent)) continue;
+			const compact = this.isCompact(agent);
+			if (rendered > 0 && (!compact || !previousCompact)) lines.push("");
+			lines.push(...(compact ? [this.renderCompactAgent(agent, width)] : this.renderAgent(agent, width)));
+			rendered++;
+			previousCompact = compact;
+		}
+		if (hidden.size > 0) {
+			const presentation = getSubagentStatusPresentation(SUBAGENT_STATUS.completed);
+			lines.push(truncateToWidth(
+				this.theme.fg("dim", `  ${presentation.icon} ${hidden.size} more ${presentation.label}`),
+				width,
+				"…",
+			));
 		}
 		if (this.agents.length > 0 && this.showToolCalls) {
 			lines.push("");

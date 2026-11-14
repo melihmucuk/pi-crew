@@ -93,7 +93,7 @@ describe("CrewWidgetComponent", () => {
 		assert.doesNotMatch(expandedOutput, /ctrl\+shift\+e/);
 	});
 
-	it("shows completed and needs-input outcomes as icons beside the working time", () => {
+	it("collapses completed outcomes to one line while needs-input keeps its details", () => {
 		const widget = component();
 		widget.setState([
 			{ ...summary(1), status: "completed", result: { outcome: "completed", report: "done" } },
@@ -101,11 +101,54 @@ describe("CrewWidgetComponent", () => {
 		], "⠋", false);
 
 		const output = widget.render(200).join("\n");
-		assert.match(output, /^✅ scout-1234 - inspect widget$/m);
+		assert.match(output, /^✅ scout-1234 - inspect widget · 0s · 1 tool call$/m);
 		assert.match(output, /^⏳ scout-5678 - inspect widget$/m);
-		assert.equal(output.match(/^  0s · 1 tool call$/gm)?.length, 2);
+		assert.match(output, /^\s+call-1  target-1 · 33 lines$/m);
+		assert.equal(output.match(/^  0s · 1 tool call$/gm)?.length, 1);
 		assert.equal(output.split("ctrl+shift+e").length - 1, 1);
 		assert.doesNotMatch(output, /completed|needs input/);
+	});
+
+	it("keeps only the newest settled agent visible while collapsed", () => {
+		const widget = component();
+		widget.setState([
+			{ ...summary(1), status: "completed", result: { outcome: "completed", report: "done" } },
+			{ ...summary(1), id: "scout-5678", status: "completed", result: { outcome: "completed", report: "done" } },
+			{ ...summary(1), id: "scout-9012", status: "completed", result: { outcome: "completed", report: "done" } },
+		], "⠋", false);
+
+		const output = widget.render(200).join("\n");
+		assert.equal(output.split("\n").length, 4);
+		assert.match(output, /^✅ scout-9012 - inspect widget · 0s · 1 tool call$/m);
+		assert.doesNotMatch(output, /scout-1234|scout-5678/);
+		assert.match(output, /^  ✅ 2 more completed$/m);
+		assert.match(output, /ctrl\+shift\+e to details/);
+	});
+
+	it("shows every settled agent in full detail when expanded", () => {
+		const widget = component();
+		widget.setState([
+			{ ...summary(1), status: "completed", result: { outcome: "completed", report: "done" } },
+			{ ...summary(1), id: "scout-5678", status: "completed", result: { outcome: "completed", report: "done" } },
+		], "⠋", true);
+
+		const output = widget.render(200).join("\n");
+		assert.match(output, /^✅ scout-1234 - inspect widget$/m);
+		assert.match(output, /^✅ scout-5678 - inspect widget$/m);
+		assert.equal(output.match(/^  0s · 1 tool call$/gm)?.length, 2);
+		assert.doesNotMatch(output, /more completed/);
+		assert.match(output, /ctrl\+shift\+e to collapse/);
+	});
+
+	it("separates the collapsed settled agent from detailed blocks", () => {
+		const widget = component();
+		widget.setState([
+			summary(1),
+			{ ...summary(1), id: "scout-5678", status: "completed", result: { outcome: "completed", report: "done" } },
+		], "⠋", false);
+
+		const output = widget.render(200).join("\n");
+		assert.match(output, /^\n✅ scout-5678 - inspect widget · 0s · 1 tool call$/m);
 	});
 
 	it("keeps every expanded widget line within the terminal width", () => {
