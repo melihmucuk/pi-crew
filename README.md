@@ -138,7 +138,7 @@ Ask Pi to create a custom agent using the [agent-writing workflow](skills/pi-cre
 
 Results arrive automatically; no polling is needed. Pi receives compact status updates and occasional reminders about subagents awaiting verification or input; these never wake an idle session or close subagents automatically. Switching sessions preserves background work; `/fork` and `/clone` transfer it to the new session. Quitting Pi aborts active subagents. See [delivery and session rules](docs/result-protocol.md#owner-delivery) for queued results and reload behavior.
 
-The status widget shows model, working time, tokens, cost, call counts, and recent tool activity. Waiting time does not count as working time. Press `Ctrl+Shift+E` to toggle activity details. Expand result cards to read the full report and open the child session.
+The status widget shows model, working time, tokens, cost, call counts, and recent tool activity. Waiting time does not count as working time. Running and needs-input subagents stay in full detail; completed ones collapse to one line and only the newest stays visible so running work keeps the screen. Press `Ctrl+Shift+E` to toggle details and show every subagent. Expand result cards to read the full report and open the child session.
 
 To hide tool-activity rows, put this in `pi-crew.json` and reload:
 
